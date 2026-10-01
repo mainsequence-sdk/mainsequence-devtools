@@ -73,7 +73,7 @@ async function main() {
     // Codex desktop replaces the selected /ms entry with a linked skill mention.
     // Exercise that emitted input, including the accompanying explicit skill item.
     const mention = `[$${skill.name}?label=ms](${skill.path})`;
-    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} --help\n`, 'success', true], [`${mention}\n`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help\n', 'success', false], ['/ms --help\r\n', 'success', false], ['/ms --help\nstatus\n', 'failure', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
+    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} --help --json\n`, 'success', true], [`${mention} --help\n`, 'success', true], [`${mention}\n`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help\n', 'success', false], ['/ms --help\r\n', 'success', false], ['/ms --help\nstatus\n', 'failure', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
       const before = modelRequests;
       const cursor = notifications.length;
       const input = [{ type: 'text', text: prompt, text_elements: [] }];
@@ -92,8 +92,17 @@ async function main() {
       if (expected) {
         assert.equal(run.status, 'blocked');
         assert.equal(calls, 0, 'Handled commands must never reach inference.');
-        const result = run.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
-        assert.equal(result?.status, expected, 'Codex must expose the action result in its event stream.');
+        if (prompt.includes('--json')) {
+          const result = run.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
+          assert.equal(result?.status, expected, 'Explicit --json must retain the structured result.');
+        } else {
+          const text = run.entries.map(entry => entry.text).join('\n');
+          if (expected === 'success') {
+            assert.match(text, /MainSequence developer tooling[^\n]*\n\n\/ms login/);
+            assert.match(text, /\/ms sync --message TEXT/);
+          } else assert.match(text, /MainSequence · [^\n]+ · Failed\n\n/);
+          assert.doesNotMatch(text, /"schemaVersion"|\\n/, 'Default output must be readable in the host event stream.');
+        }
       } else {
         assert.equal(run.status, 'completed');
         assert.ok(calls > 0, 'An ordinary prompt must pass through to the offline fixture endpoint.');

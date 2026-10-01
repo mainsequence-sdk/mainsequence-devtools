@@ -10,13 +10,13 @@ The same build produces `artifacts/codex/mainsequence-devtools/`, the standalone
 
 ## Verify and publish
 
-1. Run `npm ci --ignore-scripts`, then `npm run release:check`.
+1. Assign a new release version consistently across the package, manifest and marketplace; published npm versions are immutable. Run `npm ci --ignore-scripts`, then `npm run release:check`.
 2. Verify VS Code against that packed npm archive, including its lockfile integrity and VSIX contents. Keep the exact archive used to generate the consumer lockfile.
-3. For the first public release, authenticate with `npm login`, then publish the exact verified archive: `npm publish ./artifacts/dev-mainsequence-devtools-0.2.0.tgz --ignore-scripts --access public`.
+3. Authenticate with `npm login` or the configured trusted publisher, then publish the exact verified archive for the new version with `--ignore-scripts --access public`. Do not publish a development rebuild under an existing release version.
 4. Configure npm trusted publishing for `mainsequence-sdk/mainsequence-devtools`, workflow `release.yml`, GitHub environment `npm`, allowing direct `npm publish`. Subsequent version tags run checks, upload archives and publish that checked npm artifact through OIDC. A manual workflow run defaults to checks/artifacts only.
 5. Keep package, plugin manifest, marketplace entry and consumer dependency versions aligned. `scripts/check-release.cjs` checks producer metadata and release tags. The consumer lockfile identifies the exact npm archive, not an arbitrary local checkout.
 
-This machine's npm authentication check returned HTTP 401 during implementation. Public publication is pending authentication; a publish dry run and local consumer/installation tests do not constitute publication. The catalog can be committed before publication, but remote users cannot install its npm source until the package exists. The repository's existing working changes are not committed or pushed automatically.
+The public npm registry serves 0.2.0, and VS Code's lockfile pins that registry archive. The local Codex development build includes later line-ending and readable-output fixes; release those under a new version. Local builds and installations do not update the published archive. Verify registry integrity before updating a consumer pin.
 
 Trusted publishing needs npm 11.5.1+ and Node 22.14+; the release workflow uses Node 22 and npm 11.6.2. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
 

@@ -20,6 +20,18 @@ function commandArguments(prompt: string): string | undefined {
 }
 
 export type CodexHookOutput = { decision: 'block'; reason: string };
+const CODEX_HELP = HELP.replaceAll('ms-devtools', '/ms');
+
+function displayResult(result: ActionResult): string {
+  if (result.action === 'help') return result.summary.trimEnd();
+  const state = result.status === 'success' ? 'Completed' : result.status === 'cancelled' ? 'Cancelled' : 'Failed';
+  const sections = [`MainSequence · ${result.action} · ${state}`, result.summary];
+  if (result.error) sections.push(`Error: ${result.error.code}`);
+  if (result.data !== undefined) sections.push(JSON.stringify(result.data, null, 2));
+  if (result.effects) sections.push(`Effects may be partial: ${result.effects.message}`);
+  return sections.join('\n\n');
+}
+
 export async function handleCodexPrompt(input: unknown, dispatch: ReturnType<typeof createDevTools>['dispatch']): Promise<CodexHookOutput | undefined> {
   if (!input || typeof input !== 'object') return;
   const event = input as { hook_event_name?: string; prompt?: string; cwd?: string };
@@ -30,16 +42,19 @@ export async function handleCodexPrompt(input: unknown, dispatch: ReturnType<typ
   const args = commandArguments(event.prompt.replace(/[ \t\r\n]+$/, ''));
   if (args === undefined) return;
   let result: ActionResult;
+  let json = false;
   try {
-    const parsed = parseArguments(tokenizeCommand(args), event.cwd || process.cwd());
+    const argv = tokenizeCommand(args);
+    json = argv.includes('--json');
+    const parsed = parseArguments(argv, event.cwd || process.cwd());
     result = parsed.help
-      ? { schemaVersion: 1, action: 'help', status: 'success', summary: HELP }
+      ? { schemaVersion: 1, action: 'help', status: 'success', summary: CODEX_HELP }
       : await dispatch(parsed.request!);
   } catch (error) {
     const message = error instanceof ToolingError ? error.message : 'The explicit developer action could not be parsed.';
     result = { schemaVersion: 1, action: 'invalid', status: 'failure', summary: message, error: { code: 'INVALID_REQUEST', message } };
   }
   // Block on successes AND failures. Never feed a handled action back as model context.
-  const message = JSON.stringify(result);
+  const message = json ? JSON.stringify(result) : displayResult(result);
   return { decision: 'block', reason: message };
 }

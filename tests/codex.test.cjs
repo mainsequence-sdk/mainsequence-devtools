@@ -14,7 +14,7 @@ test('ordinary prompts pass through without dispatch; explicit /ms actions block
   for (const prompt of ['hello', ':ms --help', 'ms: --help', '/mss --help', 'please run /ms sync', 'Explain the /ms status command']) assert.equal(await handleCodexPrompt({ prompt }, dispatch), undefined);
   assert.equal(called, 0);
   const output = await handleCodexPrompt({ hook_event_name: 'UserPromptSubmit', prompt: '/ms sync -m "Update environment"', cwd: '/temporary path' }, dispatch);
-  assert.equal(output.decision, 'block'); assert.equal(JSON.parse(output.reason).status, 'failure'); assert.equal(called, 1);
+  assert.equal(output.decision, 'block'); assert.match(output.reason, /MainSequence · sync · Failed\n\nfixture failure/); assert.equal(called, 1);
   assert.equal(output.systemMessage, undefined, 'The host displays the blocking reason; do not duplicate it as a warning.');
   const invalid = await handleCodexPrompt({ prompt: '/ms login --access-token SECRET' }, dispatch);
   assert.equal(invalid.decision, 'block'); assert.doesNotMatch(invalid.reason, /SECRET/); assert.equal(called, 1);
@@ -27,8 +27,8 @@ test('native slash-menu skill mentions dispatch only for this plugin and stay ou
   let calls = 0;
   const dispatch = async request => { calls++; return { schemaVersion: 1, action: request.action, status: 'success', summary: 'fixture success', data: { root: request.root, message: request.message } }; };
   const help = await handleCodexPrompt({ prompt: `${mention} --help` }, dispatch);
-  assert.equal(help.decision, 'block'); assert.equal(JSON.parse(help.reason).action, 'help'); assert.equal(calls, 0);
-  const sync = await handleCodexPrompt({ prompt: `${mention} sync --message "Update environment (fixture)"`, cwd: '/fixture project' }, dispatch);
+  assert.equal(help.decision, 'block'); assert.match(help.reason, /\/ms sync --message TEXT/); assert.equal(calls, 0);
+  const sync = await handleCodexPrompt({ prompt: `${mention} sync --message "Update environment (fixture)" --json`, cwd: '/fixture project' }, dispatch);
   assert.equal(sync.decision, 'block');
   assert.deepEqual(JSON.parse(sync.reason).data, { root: '/fixture project', message: 'Update environment (fixture)' });
   assert.equal(calls, 1);
@@ -44,11 +44,11 @@ test('desktop trailing newline is accepted for raw commands and native skill men
     for (const ending of ['\n', '\r\n', '  \n\n']) {
       const output = await handleCodexPrompt({ prompt: `${prefix} --help${ending}` }, dispatch);
       assert.equal(output.decision, 'block');
-      assert.equal(JSON.parse(output.reason).status, 'success');
-      assert.equal(JSON.parse(output.reason).action, 'help');
+      assert.match(output.reason, /^MainSequence developer tooling[^\n]*\n\n\/ms login/);
+      assert.doesNotMatch(output.reason, /schemaVersion|\\n|ms-devtools/);
     }
     const empty = await handleCodexPrompt({ prompt: `${prefix}\n` }, dispatch);
-    assert.equal(JSON.parse(empty.reason).action, 'help');
+    assert.match(empty.reason, /\/ms sync --message TEXT/);
   }
 });
 
@@ -56,8 +56,25 @@ test('hook parser treats quoted shell syntax as literal data and rejects operato
   assert.deepEqual(tokenizeCommand('sync --message "$(echo hi); literal" --path "/a path"'), ['sync', '--message', '$(echo hi); literal', '--path', '/a path']);
   for (const command of ['sync; echo', 'status\nlogin', '\n--help', '--help\nstatus\n', 'sync -m "unclosed']) {
     const result = await handleCodexPrompt({ prompt: '/ms ' + command }, async () => { throw new Error('must not dispatch'); });
-    assert.equal(result.decision, 'block'); assert.equal(JSON.parse(result.reason).error.code, 'INVALID_REQUEST');
+    assert.equal(result.decision, 'block'); assert.match(result.reason, /Error: INVALID_REQUEST/);
   }
+});
+
+test('Codex results are readable by default and retain structured output only with --json', async () => {
+  const result = { schemaVersion: 1, action: 'sync', status: 'failure', summary: 'Sync stopped after a commit.', error: { code: 'PROCESS_FAILED', message: 'Sync stopped after a commit.' }, effects: { state: 'partial-or-uncertain', message: 'Review the commit before retrying.' } };
+  const dispatch = async () => result;
+  const readable = await handleCodexPrompt({ prompt: '/ms sync -m "fixture"' }, dispatch);
+  assert.equal(readable.decision, 'block');
+  assert.match(readable.reason, /Failed\n\nSync stopped after a commit\./);
+  assert.match(readable.reason, /Error: PROCESS_FAILED/);
+  assert.match(readable.reason, /Effects may be partial: Review the commit before retrying\./);
+  assert.doesNotMatch(readable.reason, /schemaVersion|\\n/);
+  const structured = await handleCodexPrompt({ prompt: '/ms sync -m "fixture" --json' }, dispatch);
+  assert.equal(structured.decision, 'block');
+  assert.deepEqual(JSON.parse(structured.reason), result);
+  const help = await handleCodexPrompt({ prompt: '/ms --help --json' }, dispatch);
+  assert.equal(JSON.parse(help.reason).action, 'help');
+  assert.equal(JSON.parse(help.reason).status, 'success');
 });
 
 test('typed library rejects incomplete requests before dispatch', async () => {

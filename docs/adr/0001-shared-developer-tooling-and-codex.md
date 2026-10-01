@@ -1,6 +1,6 @@
 # ADR 0001: Shared developer tooling for Codex, VS Code, and future hosts
 
-- **Status:** Accepted for phase 1; phase 2 remains proposed.
+- **Status:** Accepted; phases 1 and 2 implemented.
 - **Date:** 2026-09-30
 - **Scope:** Developer tooling and its distribution across editor and agent hosts.
 - **Revision:** Reanalyzed against Python SDK `development` and the current VS Code shared-session implementation on 2026-09-30.
@@ -8,7 +8,7 @@
 - **Phase 2:** Publish the shared npm package and migrate VS Code to consume it.
 - **Amended 2026-10-01:** the shared tooling now behaves as the released tools do in four places. A project `.env` keeps its endpoint in the VS Code extension's block, as extension 0.1.45 writes it, and a file already in that form is not written again. Logout removes the legacy unscoped `default` entry without reading it, as the Python and Command Center CLIs do. A record is read by its fields whatever its `v`, as the other readers read it. A refused session says which credentials were refused, when they expired, and what repairs it.
 
-Phase 1 and the Phase 2 package/VS Code migration are implemented locally. Public npm publication is pending authenticated registry access. See [usage and packaging](../../README.md), [Phase-1 verification](../phase-1-verification.md) and [Phase-2 verification](../phase-2-verification.md). Actual Codex app-server turns verify zero inference requests for handled actions, and CLI results/trust review are verified. Desktop rendering remains experimental pending manual verification. Live store/refresh-rotation and full backend/Git deployment checks remain release validation items.
+Phase 1 and the Phase 2 package/VS Code migration are implemented, and npm 0.2.0 is published. VS Code pins the published archive. Subsequent Codex fixes are installed in the local development plugin and require a new version for their npm release. See [usage and packaging](../../README.md), [Phase-1 verification](../phase-1-verification.md) and [Phase-2 verification](../phase-2-verification.md). Actual Codex app-server turns verify zero inference requests for handled actions, and CLI results/trust review are verified. Desktop rendering remains experimental pending manual verification. Live store/refresh-rotation and full backend/Git deployment checks remain release validation items.
 
 ## Context
 

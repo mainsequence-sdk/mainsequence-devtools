@@ -1,13 +1,13 @@
 # Phase 2 verification — updated 2026-10-01
 
-The shared package and VS Code migration are implemented locally. `mainsequence-devtools@mainsequence-local` version 0.2.0 is installed, enabled and trusted in the local Codex plugin cache (`~/.codex/plugins/cache/mainsequence-local/mainsequence-devtools/0.2.0`). Public npm publication remains pending: `npm whoami` returned HTTP 401. Local archives and a successful publish dry run do not constitute a published release.
+The shared package and VS Code migration are implemented. The public npm registry now serves `@dev-mainsequence/devtools@0.2.0`; its published archive has integrity `sha512-fdaeHMB/PHP3f+aXNJox2Py6k5wnHWck/5gjsZ8OCLLVANTimPUlzrMaimpEt0RAJX3nRPS5q9nmBugAZSjoGg==`. VS Code pins that published archive. `mainsequence-devtools@mainsequence-local` is installed, enabled and trusted in the local Codex plugin cache (`~/.codex/plugins/cache/mainsequence-local/mainsequence-devtools/0.2.0`). This local development installation includes the subsequent Codex line-ending and readable-output fixes on `main`; those changes require a new version before the next npm publication. The published 0.2.0 archive must not be replaced.
 
 ## Shared package and consumer
 
-- Strict TypeScript compilation and 49 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
-- The migrated `ms-vscode-extension` compiles and its 42 tests pass. New adapter checks cover shared session renewal, native versus fallback credential handoff, literal SDK arguments, Electron's Node mode, cancellation and workspace trust. Existing user changes were retained.
+- Strict TypeScript compilation and 50 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
+- The migrated `ms-vscode-extension` compiles and its 43 tests pass, including Python distribution status with `MAINSEQUENCE_TEST_PYTHON` set to the SDK virtual environment. New adapter checks cover shared session renewal, native versus fallback credential handoff, literal SDK arguments, Electron's Node mode, cancellation and workspace trust. Existing user changes were retained.
 - The public npm archive works from an isolated ESM consumer without SDKs or runtime npm dependencies. Private deep imports are rejected by package exports.
-- VS Code pins 0.2.0 and bundles its installed public distribution into `out/vendor/devtools`. Its packaged VSIX contains that distribution and version metadata, without runtime `node_modules`, sibling checkouts or private package imports. The lockfile integrity identifies the exact checked local npm archive intended for publication.
+- VS Code pins the published 0.2.0 archive and bundles its installed public distribution into `out/vendor/devtools`. Its packaged VSIX contains that distribution and version metadata, without runtime `node_modules`, sibling checkouts or private package imports. The lockfile integrity identifies the registry archive rather than a later development build with the same version.
 - Synthetic interoperability checks pass in both directions against the actual Python SDK `development` and Command Center SDK `main` session implementations. Both SDK repositories remain unchanged. These checks do not access the user's credential store or log in to a live backend.
 
 ## Installed Codex host
@@ -21,6 +21,7 @@ The CLI `/hooks` review showed the exact installed runner command, synchronous m
 | Prompt | Action result | Host hook status | Model requests |
 | --- | --- | --- | --- |
 | selected `ms` + `--help` | success | blocked | 0 |
+| selected `ms` + `--help --json` | success, structured output requested explicitly | blocked | 0 |
 | selected `ms` + `--help` with the desktop's trailing newline | success | blocked | 0 |
 | selected `ms` without arguments, with a trailing newline | success, help | blocked | 0 |
 | selected `ms` + `invalid-action` | failure | blocked | 0 |
@@ -49,11 +50,15 @@ The fixture copies only this exact previously reviewed MainSequence hook definit
 
 A terminal installation does not hot-reload a chat that was already running. Toggle MainSequence Developer Tools off and on in the desktop Plugins settings; the installed app's plugin setting code sends `config/batchWrite` with `reloadUserConfig: true`. Alternatively, start a new Codex chat after installation.
 
-The user's subsequent screenshot shows the hook blocking the native entry in this chat. Its failure exposed a second issue: the desktop composer appends a newline to submitted text, which the single-line parser rejected. The adapter now removes trailing layout whitespace before parsing while retaining rejection of embedded newlines. Adapter tests and installed-host checks accept the exact trailing-newline form with zero model requests. A successful desktop retry after that parser fix has not yet been observed.
+The user's subsequent screenshot shows the hook blocking the native entry in this chat. Its failure exposed a second issue: the desktop composer appends a newline to submitted text, which the single-line parser rejected. The adapter now removes trailing layout whitespace before parsing while retaining rejection of embedded newlines. Adapter tests and installed-host checks accept the exact trailing-newline form with zero model requests. The user subsequently supplied the successful help result from the desktop.
+
+## Readable Codex output — 2026-10-01
+
+That successful help result was displayed as compact JSON with escaped newlines. The adapter now returns readable text by default, with `/ms` examples in Codex help. Explicit `--json` retains the versioned action result. Failure codes and partial-effect warnings remain visible in text output. The installed-host fixture asserts actual line breaks, the absence of a JSON envelope, and zero model requests; it separately checks the explicit JSON form. Codex still marks the hook as blocked because the hook stops the prompt before inference, including after successful actions. This change does not replace that host-owned label. The updated desktop renderer still requires a user retry.
 
 ## Remaining release checks
 
-- Authenticate to npm and publish the exact verified archive, then confirm registry integrity. Configure trusted publishing before using the release workflow for subsequent versions.
+- Assign a new package/plugin/catalog version before publishing the later Codex fixes, then confirm the new registry archive's integrity. Configure trusted publishing before using the release workflow for subsequent versions. Do not attempt to republish 0.2.0.
 - Manually verify the desktop renderer after restarting/reloading the app. Computer-use tooling refuses access to the Codex app, so GUI validation could not be completed automatically. The installed host runtime, event stream and CLI presentation were tested directly.
 - Check the long-operation progress, cancellation and timeout UI in the desktop host. The runner's timeout and cancellation contracts have fixture coverage, but a full-duration desktop operation was not run.
 - Validate live OS-store refresh rotation across all supported platforms and a real backend/Git setup/sync deployment. The automated suites use synthetic identities, loopback backends and temporary repositories.
