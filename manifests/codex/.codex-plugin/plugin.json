@@ -1,0 +1,21 @@
+{
+  "name": "mainsequence-devtools",
+  "version": "0.2.0",
+  "description": "Select ms in the Codex slash menu to run MainSequence developer actions with a bundled deterministic runner.",
+  "author": {
+    "name": "MainSequence"
+  },
+  "license": "MIT",
+  "hooks": "./hooks/hooks.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "MainSequence Developer Tools",
+    "shortDescription": "Run explicit MainSequence developer commands without inference.",
+    "developerName": "MainSequence",
+    "category": "Productivity",
+    "websiteUrl": "https://www.main-sequence.io/",
+    "composerIcon": "./assets/mainsequence-icon.svg",
+    "logo": "./assets/mainsequence-icon.svg",
+    "logoDark": "./assets/mainsequence-icon.svg"
+  }
+}

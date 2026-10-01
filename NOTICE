@@ -1,0 +1,12 @@
+The native machine-session store, backend normalization, browser authorization flow,
+repository identity/layout, response models, and project CLI contracts derive from
+ms-vscode-extension 0.1.45 (4bb107e), Copyright (c) 2024 MainSequence SDK, MIT license.
+
+Adaptations remove VS Code APIs and legacy project-token projection, add explicit host
+interfaces, cancellation, safe results, and deterministic command dispatch.
+The SDK repositories remain independent and are not bundled.
+
+MainSequence brand icons are copied unchanged from the public website:
+https://www.main-sequence.io/favicon.svg
+https://www.main-sequence.io/favicon-192.png
+Retrieved 2026-10-01. The branding belongs to MainSequence.

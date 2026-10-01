@@ -1,0 +1,7 @@
+interface:
+  display_name: "ms"
+  short_description: "Run MainSequence developer commands locally"
+  icon_small: "./assets/mainsequence-icon.png"
+  icon_large: "./assets/mainsequence-icon.svg"
+policy:
+  allow_implicit_invocation: false

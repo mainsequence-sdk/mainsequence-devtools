@@ -1,0 +1,50 @@
+# Phase 2 release and installation
+
+One repository, one npm package, one lockfile. Both SDKs remain unchanged.
+
+## Artifacts
+
+`@dev-mainsequence/devtools@0.2.0` contains the public TypeScript/JavaScript API, `ms-devtools` runner, `.codex-plugin/plugin.json`, the explicit-only `ms` skill registration, hooks and version metadata. The npm registry can therefore serve both VS Code's build dependency and Codex's marketplace package source. No package is downloaded when an action executes. The supported Codex compatibility manifest is required here: the tested 0.159.2 runtime recognizes a root Agent Plugins manifest but skips its hooks. Shipping both would still select the root format and suppress the hook, so this package deliberately omits root `plugin.json`.
+
+The same build produces `artifacts/codex/mainsequence-devtools/`, the standalone plugin archive, and a local marketplace at `artifacts/local-marketplace/`. VS Code pins the package and copies the compiled distribution into `out/vendor/devtools` during compile; its VSIX includes that copy with version metadata. No new shared repository or npm workspace is needed.
+
+## Verify and publish
+
+1. Run `npm ci --ignore-scripts`, then `npm run release:check`.
+2. Verify VS Code against that packed npm archive, including its lockfile integrity and VSIX contents. Keep the exact archive used to generate the consumer lockfile.
+3. For the first public release, authenticate with `npm login`, then publish the exact verified archive: `npm publish ./artifacts/dev-mainsequence-devtools-0.2.0.tgz --ignore-scripts --access public`.
+4. Configure npm trusted publishing for `mainsequence-sdk/mainsequence-devtools`, workflow `release.yml`, GitHub environment `npm`, allowing direct `npm publish`. Subsequent version tags run checks, upload archives and publish that checked npm artifact through OIDC. A manual workflow run defaults to checks/artifacts only.
+5. Keep package, plugin manifest, marketplace entry and consumer dependency versions aligned. `scripts/check-release.cjs` checks producer metadata and release tags. The consumer lockfile identifies the exact npm archive, not an arbitrary local checkout.
+
+This machine's npm authentication check returned HTTP 401 during implementation. Public publication is pending authentication; a publish dry run and local consumer/installation tests do not constitute publication. The catalog can be committed before publication, but remote users cannot install its npm source until the package exists. The repository's existing working changes are not committed or pushed automatically.
+
+Trusted publishing needs npm 11.5.1+ and Node 22.14+; the release workflow uses Node 22 and npm 11.6.2. See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/).
+
+## Install Codex locally
+
+```sh
+npm run build
+codex plugin marketplace add /absolute/path/mainsequence-devtools/artifacts/local-marketplace
+codex plugin add mainsequence-devtools@mainsequence-local
+```
+
+Review and trust the current hook definition in Codex (`/hooks` in the CLI). Start a new session after installation. For an existing desktop chat, toggle MainSequence Developer Tools off and on in Plugins settings after the current agent turn ends; this uses the supported configuration hot reload. External CLI installation alone does not update a loaded thread's hooks. Installation itself does not trust hooks. The local catalog loads the built artifact, while the installed plugin runs from Codex's cache. This machine's `mainsequence-devtools@mainsequence-local` installation is enabled and its exact hook definition has been reviewed and trusted.
+
+After installation, run `node scripts/verify-codex-host.cjs` for an opt-in host integration check. It creates an ephemeral Codex session, disables the MainSequence MCP server for that session, and directs inference to a local counted HTTP fixture. It verifies native `ms` skill registration and submits its linked mention plus explicit skill input. Help and failed commands do not reach inference, while an ordinary prompt does. It never contacts a real model endpoint or uses live MainSequence authentication.
+
+## Install the published release
+
+```sh
+codex plugin marketplace add mainsequence-sdk/mainsequence-devtools
+codex plugin add mainsequence-devtools@mainsequence
+```
+
+The committed `.agents/plugins/marketplace.json` points to the exact npm version. Codex installs the npm archive without running lifecycle scripts; the archive already includes its compiled runner and plugin files. Users need Node 22+, plus the target project's SDK and action-specific tools for project operations. Login/status can run before either SDK exists.
+
+See [Codex plugin packaging and npm sources](https://developers.openai.com/plugins/build/plugins) and [plugin commands](https://learn.chatgpt.com/docs/developer-commands).
+
+## Execution and limits
+
+In Codex desktop, type `/ms`, select the native `ms` slash-menu entry, append arguments such as `--help`, and submit. The skill registers the interface; its linked mention is intercepted by the trusted hook and executed by the bundled runner. Ordinary prompts pass through. Handled actions return a blocking hook result, with credentials excluded from results and logs. Installed registration and zero inference requests are verified in actual Codex 0.159.2 app-server turns. The desktop menu/renderer and long-operation UI still need manual verification. Codex CLI 0.159.2 rejects custom `/ms` before submission; use the `ms-devtools` terminal runner there. See [Phase-2 verification](phase-2-verification.md).
+
+Native machine mode shares the SDK record and leaves repository `.env` files endpoint-only. VS Code explicitly supplies its existing SecretStorage fallback/projection policy where native persistence is unavailable, and opts into its SDK-owned MCP skills workflow. Codex enables neither option. SDK project operations retain their existing implementations; no SDK depends on this npm package.

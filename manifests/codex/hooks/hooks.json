@@ -1,0 +1,17 @@
+{
+  "description": "Executes commands from the ms slash-menu entry before inference. Requires Node 22+ and hook trust. Ordinary prompts pass through.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/dist/runner.js\" --codex-hook",
+            "timeout": 600,
+            "statusMessage": "Checking for an explicit MainSequence action"
+          }
+        ]
+      }
+    ]
+  }
+}

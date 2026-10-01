@@ -1,0 +1,52 @@
+{
+  "name": "@dev-mainsequence/devtools",
+  "version": "0.2.0",
+  "description": "Shared MainSequence developer actions and deterministic Codex adapter",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "ms-devtools": "./dist/runner.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    ".codex-plugin",
+    "hooks",
+    "skills",
+    "assets",
+    "build-info.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-plugin.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test tests/*.test.cjs",
+    "pack:plugin": "npm run build && node scripts/pack-plugin.cjs",
+    "prepack": "npm run build",
+    "verify:package": "node scripts/verify-package.cjs",
+    "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && node scripts/pack-plugin.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "typescript": "5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mainsequence-sdk/mainsequence-devtools.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
