@@ -174,19 +174,35 @@ test('macOS: an entry this process read is updated in place', () => {
   assert.deepEqual(security.commands, [`write ${account}`]);
 });
 
-test('macOS: logout removes both account names, and a record too long is refused', () => {
+test('macOS: logout removes both account names without reading them, and a record too long is refused', () => {
   const security = fakeSecurity();
   const account = sessionAccount(BACKEND);
   security.put(account, '{}');
   security.put('default', JSON.stringify({ access: 'legacy', refresh: 'r' }));
   assert.equal(clearSession(security.store, BACKEND), true);
-  assert.deepEqual(security.commands, [`delete ${account}`, 'inspect default', 'read-secret default', 'delete default']);
+  assert.deepEqual(security.commands, [`delete ${account}`, 'delete default']);
   assert.equal(clearSession(security.store, BACKEND), false);
 
   assert.throws(
     () => saveSession(security.store, BACKEND, { username: '', access: 'a'.repeat(2000), refresh: 'r' }),
     error => error instanceof CredentialStoreError && /too long/.test(error.message)
   );
+});
+
+test('macOS: logout succeeds when the legacy entry was written by another program', () => {
+  const security = fakeSecurity();
+  const account = sessionAccount(BACKEND);
+  security.put(account, JSON.stringify({ v: 1, backend: BACKEND, access: 'a', refresh: 'r' }));
+  security.put('default', JSON.stringify({ access: 'foreign', refresh: 'r' }), { ours: false });
+  assert.equal(clearSession(security.store, BACKEND), true);
+  assert.equal(security.entries.size, 0);
+  assert.ok(!security.commands.some(command => command.startsWith('read-secret')), 'no secret is asked for');
+});
+
+test('a record is read by its fields whatever its version, like the other readers', () => {
+  const security = fakeSecurity();
+  security.put(sessionAccount(BACKEND), JSON.stringify({ v: 2, backend: BACKEND, username: 'ada', access: 'a', refresh: 'r' }));
+  assert.deepEqual(readSession(security.store, BACKEND), { username: 'ada', access: 'a', refresh: 'r' });
 });
 
 test('a record of another backend is not this backend\'s session, and the old unscoped entry is read', () => {

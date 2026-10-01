@@ -22,6 +22,24 @@ function expiry(access: string): string | undefined {
     return typeof exp === 'number' && Number.isFinite(exp) ? new Date(exp * 1000).toISOString() : undefined;
   } catch { return undefined; }
 }
+/** " on 2026-09-30 18:45 UTC" when the token carries an expiry that has passed. */
+function expiredOn(token: string): string {
+  const at = expiry(token);
+  return at && Date.parse(at) <= Date.now() ? ` on ${at.slice(0, 16).replace('T', ' ')} UTC` : '';
+}
+/** Say which credentials the backend refused and how to repair them; no token value is included. */
+function refusedCredentials(source: 'machine' | 'environment', backend: string, token: string): ToolingError {
+  const when = expiredOn(token);
+  if (source === 'environment') {
+    return new ToolingError('AUTH_REJECTED',
+      `The backend refused the credentials set in this process's environment (MAINSEQUENCE_ACCESS_TOKEN / MAINSEQUENCE_REFRESH_TOKEN) for ${backend}` +
+      (when ? `: they expired${when}.` : '.') +
+      ' They win over the saved session. Start the process without them to use the saved session, or sign in again and set a current pair.');
+  }
+  return new ToolingError('AUTH_REJECTED',
+    `The backend refused the saved session for ${backend}` + (when ? `: it expired${when}.` : ': it was revoked or belongs to another backend.') +
+    ' Sign in again.');
+}
 function tokenPair(data: any, previous?: MachineSession): MachineSession {
   const access = data?.access || data?.access_token || data?.token || data?.jwt;
   const refresh = data?.refresh || data?.refresh_token || previous?.refresh;
@@ -136,7 +154,12 @@ export class MachineSessionService implements SessionService {
       // Bypass cached state: another SDK process may have rotated the refresh token.
       const previous = await this.saved(backend);
       if (!previous?.refresh) throw new ToolingError('NOT_AUTHENTICATED', 'No refreshable machine session is saved for this backend.');
-      const data = await this.http(backend, 'POST', '/auth/jwt-token/token/refresh/', { refresh: previous.refresh });
+      let data: unknown;
+      try { data = await this.http(backend, 'POST', '/auth/jwt-token/token/refresh/', { refresh: previous.refresh }); }
+      catch (error) {
+        if (error instanceof ToolingError && error.code === 'AUTH_REJECTED') throw refusedCredentials('machine', backend, previous.refresh);
+        throw error;
+      }
       const session = this.remember(tokenPair(data, previous));
       await this.persist(backend, session);
       return session;
@@ -189,10 +212,16 @@ export class MachineSessionService implements SessionService {
     }
     try { return await this.http<T>(backend, method, apiPath, body, session.access); }
     catch (error) {
-      if (!(error instanceof ToolingError) || error.code !== 'AUTH_REJECTED' || source === 'environment' || !retrySafe) throw error;
+      if (!(error instanceof ToolingError) || error.code !== 'AUTH_REJECTED') throw error;
+      if (source === 'environment') throw refusedCredentials('environment', backend, session.access);
+      if (!retrySafe) throw error;
       const latest = await this.saved(backend);
       const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend);
-      return this.http<T>(backend, method, apiPath, body, retry.access);
+      try { return await this.http<T>(backend, method, apiPath, body, retry.access); }
+      catch (retryError) {
+        if (retryError instanceof ToolingError && retryError.code === 'AUTH_REJECTED') throw refusedCredentials('machine', backend, retry.refresh || retry.access);
+        throw retryError;
+      }
     }
   }
   async refresh(input: string): Promise<SessionStatus> {

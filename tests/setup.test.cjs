@@ -63,7 +63,7 @@ const tools = createDevTools({host,store:null,env:{...process.env,MAINSEQUENCE_E
   assert.equal(result.busy.error.code, 'PROJECT_BUSY');
   assert.equal(result.calls.filter(call => call.endpoint.endsWith('/add-deploy-key/')).length, 1);
   assert.equal(result.checks, 2);
-  assert.equal(await fs.readFile(path.join(result.result.data.root, '.env'), 'utf8'), 'MAINSEQUENCE_ENDPOINT=https://fixture.example\n');
+  assert.equal(await fs.readFile(path.join(result.result.data.root, '.env'), 'utf8'), '# BEGIN MAINSEQUENCE AUTH (managed by VS Code)\nMAINSEQUENCE_ENDPOINT=https://fixture.example\n# END MAINSEQUENCE AUTH\n');
   assert.doesNotMatch(execution.stdout, /fixture-process-access|PRIVATE KEY/);
   assert.equal((await fs.readdir(path.join(home, '.ssh'))).length, 2);
 });

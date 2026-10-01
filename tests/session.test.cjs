@@ -82,6 +82,9 @@ test('explicit environment rejection stays on that identity and mismatched backe
   const tooling = createDevTools({ host: createNodeHost(), env, store });
   const failure = await tooling.dispatch({ action: 'repositories', backend });
   assert.equal(failure.error.code, 'AUTH_REJECTED'); assert.equal(calls.length, 1);
+  assert.match(failure.error.message, /credentials set in this process's environment \(MAINSEQUENCE_ACCESS_TOKEN \/ MAINSEQUENCE_REFRESH_TOKEN\)/);
+  assert.match(failure.error.message, /Start the process without them to use the saved session/);
+  assert.doesNotMatch(failure.error.message, /rejected-process-token/);
   const mismatch = await tooling.dispatch({ action: 'auth-status', backend: 'https://another.example' });
   assert.equal(mismatch.error.code, 'BACKEND_MISMATCH');
   assert.equal(readSession(store, backend).refresh, 'saved-refresh');
@@ -107,14 +110,15 @@ test('login cancellation and timeout close the callback server without persistin
   }
 });
 
-test('backend record identity is exact; refresh-only records work and logout preserves another legacy backend', async t => {
+test('backend record identity is exact; refresh-only records work and logout removes the legacy unscoped entry like the CLIs', async t => {
   const { backend } = await fixtureBackend(t), store = memoryStore();
   saveSession(store, backend, { username: 'refresh-only', access: '', refresh: 'fixture-refresh-1' });
   const result = await createDevTools({ host: createNodeHost(), store, env: {} }).dispatch({ action: 'auth-status', backend, check: true });
   assert.equal(result.status, 'success'); assert.equal(readSession(store, backend).access, 'fixture-access-2');
   store.write(SESSION_SERVICE, 'default', JSON.stringify({ v: 1, backend: 'https://other.example', access: 'other', refresh: 'other-r' }));
   clearSession(store, backend);
-  assert.equal(readSession(store, 'https://other.example').access, 'other');
+  // The Python and Command Center CLIs remove the unscoped entry of old versions unread; so does this.
+  assert.equal(readSession(store, 'https://other.example'), null);
   assert.notEqual(sessionAccount('https://HOST.example:443/path'), sessionAccount('https://host.example/path'));
 });
 
@@ -136,4 +140,18 @@ test('login obtains a missing username from the existing profile endpoint', asyn
   };
   const result = await createDevTools({ host: browserHost(), env: {}, store, fetch: fetchImpl }).dispatch({ action: 'login', backend });
   assert.equal(result.status, 'success'); assert.equal(result.data.username, 'José'); assert.equal(readSession(store, backend).username, 'José');
+});
+
+test('a refused renewal names the saved session, its expiry and the sign-in, and keeps the session', async t => {
+  const { backend } = await fixtureBackend(t);
+  const part = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const expiredRefresh = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 3600 })}.signature`;
+  const store = memoryStore(); saveSession(store, backend, { username: 'shared', access: 'stale-access', refresh: expiredRefresh });
+  const fetchImpl = async (url, init) => String(url).endsWith('/auth/jwt-token/token/refresh/')
+    ? new Response(JSON.stringify({ detail: 'Token is invalid or expired' }), { status: 401 })
+    : fetch(url, init);
+  const result = await createDevTools({ host: createNodeHost(), env: {}, store, fetch: fetchImpl }).dispatch({ action: 'repositories', backend });
+  assert.equal(result.error.code, 'AUTH_REJECTED');
+  assert.match(result.error.message, /^The backend refused the saved session for http:\/\/127\.0\.0\.1:\d+: it expired on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\. Sign in again\.$/);
+  assert.equal(readSession(store, backend).refresh, expiredRefresh);
 });

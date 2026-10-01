@@ -1,6 +1,6 @@
 # Phase 2 verification — updated 2026-10-01
 
-The shared package and VS Code migration are implemented locally. `mainsequence-devtools@mainsequence-local` version 0.2.0 is installed, enabled and trusted in `/Users/jose/.codex/plugins/cache/mainsequence-local/mainsequence-devtools/0.2.0`. Public npm publication remains pending: `npm whoami` returned HTTP 401. Local archives and a successful publish dry run do not constitute a published release.
+The shared package and VS Code migration are implemented locally. `mainsequence-devtools@mainsequence-local` version 0.2.0 is installed, enabled and trusted in the local Codex plugin cache (`~/.codex/plugins/cache/mainsequence-local/mainsequence-devtools/0.2.0`). Public npm publication remains pending: `npm whoami` returned HTTP 401. Local archives and a successful publish dry run do not constitute a published release.
 
 ## Shared package and consumer
 

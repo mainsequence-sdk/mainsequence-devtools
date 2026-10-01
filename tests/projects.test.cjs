@@ -94,8 +94,12 @@ test('env cleanup removes export/whitespace legacy credentials, preserves app se
   const result = await tooling.dispatch({ action: 'env-cleanup', root: p.root, backend: 'https://fixture.example' });
   assert.equal(result.status, 'success');
   const text = await fs.readFile(path.join(p.root, '.env'), 'utf8');
-  assert.equal(text, 'APP_SETTING=keep\n\nMAINSEQUENCE_ENDPOINT=https://fixture.example\n');
+  assert.equal(text, 'APP_SETTING=keep\n\n# BEGIN MAINSEQUENCE AUTH (managed by VS Code)\nMAINSEQUENCE_ENDPOINT=https://fixture.example\n# END MAINSEQUENCE AUTH\n');
   assert.equal((await fs.stat(path.join(p.root, '.env'))).mode & 0o777, 0o600);
+  const written = await fs.stat(path.join(p.root, '.env'));
+  assert.equal((await tooling.dispatch({ action: 'env-cleanup', root: p.root, backend: 'https://fixture.example' })).status, 'success');
+  const again = await fs.stat(path.join(p.root, '.env'));
+  assert.deepEqual([again.ino, again.mtimeMs], [written.ino, written.mtimeMs], 'a file already in machine form is not written again');
   p.git(['add', '-f', '.env']);
   assert.equal((await tooling.dispatch({ action: 'env-cleanup', root: p.root, backend: 'https://fixture.example' })).error.code, 'INVALID_REQUEST');
   p.git(['reset', '--', '.env']); await fs.unlink(path.join(p.root, '.env'));

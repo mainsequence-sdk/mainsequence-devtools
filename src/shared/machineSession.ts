@@ -280,9 +280,8 @@ function parseRecord(raw: string, backend: string): MachineSession | null {
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     throw new CredentialStoreError('The saved session record is not valid.');
   }
-  if (record.v !== undefined && record.v !== SESSION_RECORD_VERSION) {
-    throw new CredentialStoreError('The saved session record version is unsupported.');
-  }
+  // `v` is written, not checked: the Python and Command Center CLIs read a record by its fields,
+  // and the three readers must accept the same records.
   // A record written before the backend was part of it carries none.
   const recordedBackend = typeof record.backend === 'string' ? record.backend.trim() : '';
   if (recordedBackend && normalizeBackendUrl(recordedBackend) !== requireBackend(backend)) return null;
@@ -319,11 +318,17 @@ export function saveSession(store: CredentialStore, backend: string, session: Ma
   store.write(SESSION_SERVICE, sessionAccount(backend), ascii);
 }
 
-/** Remove the saved session of one backend. Missing state is success. */
+/**
+ * Remove the saved session of one backend. Missing state is success.
+ *
+ * The legacy unscoped entry goes too, unread, as the Python and Command Center CLIs remove it:
+ * deleting needs no consent, while reading an entry another program wrote is refused on macOS
+ * and would make the logout fail.
+ */
 export function clearSession(store: CredentialStore, backend: string): boolean {
-  let removed = store.remove(SESSION_SERVICE, sessionAccount(backend));
-  // A legacy unscoped record may belong to another backend. Do not log that backend out.
-  const legacy = store.read(SESSION_SERVICE, UNSCOPED_ACCOUNT);
-  if (legacy && parseRecord(legacy, backend)) removed = store.remove(SESSION_SERVICE, UNSCOPED_ACCOUNT) || removed;
+  let removed = false;
+  for (const account of [sessionAccount(backend), UNSCOPED_ACCOUNT]) {
+    removed = store.remove(SESSION_SERVICE, account) || removed;
+  }
   return removed;
 }
