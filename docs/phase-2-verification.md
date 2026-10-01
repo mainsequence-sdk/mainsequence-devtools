@@ -4,7 +4,7 @@ The shared package and VS Code migration are implemented. The public npm registr
 
 ## Shared package and consumer
 
-- Strict TypeScript compilation and 50 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
+- Strict TypeScript compilation and 53 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
 - The migrated `ms-vscode-extension` compiles and its 43 tests pass, including Python distribution status with `MAINSEQUENCE_TEST_PYTHON` set to the SDK virtual environment. New adapter checks cover shared session renewal, native versus fallback credential handoff, literal SDK arguments, Electron's Node mode, cancellation and workspace trust. Existing user changes were retained.
 - The public npm archive works from an isolated ESM consumer without SDKs or runtime npm dependencies. Private deep imports are rejected by package exports.
 - VS Code pins the published 0.2.0 archive and bundles its installed public distribution into `out/vendor/devtools`. Its packaged VSIX contains that distribution and version metadata, without runtime `node_modules`, sibling checkouts or private package imports. The lockfile integrity identifies the registry archive rather than a later development build with the same version.
@@ -22,6 +22,8 @@ The CLI `/hooks` review showed the exact installed runner command, synchronous m
 | --- | --- | --- | --- |
 | selected `ms` + `--help` | success | blocked | 0 |
 | selected `ms` + `--help --json` | success, structured output requested explicitly | blocked | 0 |
+| literal `/ms --help --all` | success, complete command menu | blocked | 0 |
+| literal `/ms sync --help` | success, command-specific options | blocked | 0 |
 | selected `ms` + `--help` with the desktop's trailing newline | success | blocked | 0 |
 | selected `ms` without arguments, with a trailing newline | success, help | blocked | 0 |
 | selected `ms` + `invalid-action` | failure | blocked | 0 |
@@ -54,7 +56,9 @@ The user's subsequent screenshot shows the hook blocking the native entry in thi
 
 ## Readable Codex output — 2026-10-01
 
-That successful help result was displayed as compact JSON with escaped newlines. The adapter now returns readable text by default, with `/ms` examples in Codex help. Explicit `--json` retains the versioned action result. Failure codes and partial-effect warnings remain visible in text output. The installed-host fixture asserts actual line breaks, the absence of a JSON envelope, and zero model requests; it separately checks the explicit JSON form. Codex still marks the hook as blocked because the hook stops the prompt before inference, including after successful actions. This change does not replace that host-owned label. The updated desktop renderer still requires a user retry.
+That successful help result was displayed as compact JSON with escaped newlines. The first presentation fix removed the envelope but still dumped each command's `data` object and reused the dense terminal help. The Codex adapter now has its own presentation layer: a short getting-started menu, a full menu at `/ms --help --all`, command-specific options, named repository entries, account summaries and readable project/SDK fields. Default output contains no serialized data objects or internal store/lock metadata. Clear failure messages include next steps where appropriate; partial-effect warnings remain visible. Explicit `--json` retains the unchanged versioned action result and error codes, and a literal `--json` message value does not select export mode.
+
+The installed-host fixture asserts actual line breaks, the command menus, absence of a JSON envelope, and zero model requests; it separately checks explicit JSON output. Formatter fixtures cover repository lists, empty results, machine-session status, project capabilities and SDK source-versus-registry distinctions. Codex still marks the hook as blocked because it stops the prompt before inference, including after successful actions. This changes the text presentation rather than replacing the host-owned card or adding interactive components. The desktop screenshot verified the first text-output fix; the latest menu and field layouts still require a user retry.
 
 ## Remaining release checks
 

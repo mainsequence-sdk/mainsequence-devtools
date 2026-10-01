@@ -73,7 +73,7 @@ async function main() {
     // Codex desktop replaces the selected /ms entry with a linked skill mention.
     // Exercise that emitted input, including the accompanying explicit skill item.
     const mention = `[$${skill.name}?label=ms](${skill.path})`;
-    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} --help --json\n`, 'success', true], [`${mention} --help\n`, 'success', true], [`${mention}\n`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help\n', 'success', false], ['/ms --help\r\n', 'success', false], ['/ms --help\nstatus\n', 'failure', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
+    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} --help --json\n`, 'success', true], [`${mention} --help\n`, 'success', true], [`${mention}\n`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help\n', 'success', false], ['/ms --help\r\n', 'success', false], ['/ms --help --all\n', 'success', false], ['/ms sync --help\n', 'success', false], ['/ms --help\nstatus\n', 'failure', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
       const before = modelRequests;
       const cursor = notifications.length;
       const input = [{ type: 'text', text: prompt, text_elements: [] }];
@@ -98,8 +98,11 @@ async function main() {
         } else {
           const text = run.entries.map(entry => entry.text).join('\n');
           if (expected === 'success') {
-            assert.match(text, /MainSequence developer tooling[^\n]*\n\n\/ms login/);
-            assert.match(text, /\/ms sync --message TEXT/);
+            assert.match(text, /MainSequence[^\n]*\n\n/);
+            assert.match(text, /\/ms sync --message "Describe your changes"/);
+            if (prompt.includes('--all')) assert.match(text, /\/ms env-cleanup/);
+            else if (prompt.includes('sync --help')) assert.match(text, /--dry-run  Preview the operation/);
+            else assert.match(text, /Get started\n\nSign in\n\/ms login/);
           } else assert.match(text, /MainSequence · [^\n]+ · Failed\n\n/);
           assert.doesNotMatch(text, /"schemaVersion"|\\n/, 'Default output must be readable in the host event stream.');
         }
