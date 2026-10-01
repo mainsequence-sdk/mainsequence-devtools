@@ -36,9 +36,25 @@ test('native slash-menu skill mentions dispatch only for this plugin and stay ou
   assert.equal(calls, 1);
 });
 
+test('desktop trailing newline is accepted for raw commands and native skill mentions', async () => {
+  const skillPath = path.resolve('skills/ms/SKILL.md');
+  const mention = `[$mainsequence-devtools:ms](${skillPath})`;
+  const dispatch = async () => { throw new Error('Help must not dispatch an action'); };
+  for (const prefix of ['/ms', mention]) {
+    for (const ending of ['\n', '\r\n', '  \n\n']) {
+      const output = await handleCodexPrompt({ prompt: `${prefix} --help${ending}` }, dispatch);
+      assert.equal(output.decision, 'block');
+      assert.equal(JSON.parse(output.reason).status, 'success');
+      assert.equal(JSON.parse(output.reason).action, 'help');
+    }
+    const empty = await handleCodexPrompt({ prompt: `${prefix}\n` }, dispatch);
+    assert.equal(JSON.parse(empty.reason).action, 'help');
+  }
+});
+
 test('hook parser treats quoted shell syntax as literal data and rejects operators/multiline/unclosed quotes', async () => {
   assert.deepEqual(tokenizeCommand('sync --message "$(echo hi); literal" --path "/a path"'), ['sync', '--message', '$(echo hi); literal', '--path', '/a path']);
-  for (const command of ['sync; echo', 'status\nlogin', '\n--help', '--help\n', 'sync -m "unclosed']) {
+  for (const command of ['sync; echo', 'status\nlogin', '\n--help', '--help\nstatus\n', 'sync -m "unclosed']) {
     const result = await handleCodexPrompt({ prompt: '/ms ' + command }, async () => { throw new Error('must not dispatch'); });
     assert.equal(result.decision, 'block'); assert.equal(JSON.parse(result.reason).error.code, 'INVALID_REQUEST');
   }

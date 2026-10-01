@@ -73,7 +73,7 @@ async function main() {
     // Codex desktop replaces the selected /ms entry with a linked skill mention.
     // Exercise that emitted input, including the accompanying explicit skill item.
     const mention = `[$${skill.name}?label=ms](${skill.path})`;
-    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help', 'success', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
+    for (const [prompt, expected, explicitSkill] of [ [`${mention} --help`, 'success', true], [`${mention} --help\n`, 'success', true], [`${mention}\n`, 'success', true], [`${mention} invalid-action`, 'failure', true], [`${mention} sync`, 'failure', true], ['/ms --help\n', 'success', false], ['/ms --help\r\n', 'success', false], ['/ms --help\nstatus\n', 'failure', false], ['ordinary fixture prompt', null, false], [':ms --help', null, false] ]) {
       const before = modelRequests;
       const cursor = notifications.length;
       const input = [{ type: 'text', text: prompt, text_elements: [] }];

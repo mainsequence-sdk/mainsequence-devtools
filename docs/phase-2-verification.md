@@ -4,7 +4,7 @@ The shared package and VS Code migration are implemented locally. `mainsequence-
 
 ## Shared package and consumer
 
-- Strict TypeScript compilation and 45 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
+- Strict TypeScript compilation and 49 shared tests pass. Fixtures cover the canonical credential record, browser authorization, refresh rotation, rejection/identity boundaries, host fallback, repository resolution, SDK dispatch, cancellation and hook packaging.
 - The migrated `ms-vscode-extension` compiles and its 42 tests pass. New adapter checks cover shared session renewal, native versus fallback credential handoff, literal SDK arguments, Electron's Node mode, cancellation and workspace trust. Existing user changes were retained.
 - The public npm archive works from an isolated ESM consumer without SDKs or runtime npm dependencies. Private deep imports are rejected by package exports.
 - VS Code pins 0.2.0 and bundles its installed public distribution into `out/vendor/devtools`. Its packaged VSIX contains that distribution and version metadata, without runtime `node_modules`, sibling checkouts or private package imports. The lockfile integrity identifies the exact checked local npm archive intended for publication.
@@ -21,9 +21,13 @@ The CLI `/hooks` review showed the exact installed runner command, synchronous m
 | Prompt | Action result | Host hook status | Model requests |
 | --- | --- | --- | --- |
 | selected `ms` + `--help` | success | blocked | 0 |
+| selected `ms` + `--help` with the desktop's trailing newline | success | blocked | 0 |
+| selected `ms` without arguments, with a trailing newline | success, help | blocked | 0 |
 | selected `ms` + `invalid-action` | failure | blocked | 0 |
 | selected `ms` + `sync` | failure, missing required arguments | blocked | 0 |
 | literal `/ms --help` submitted via app-server | success | blocked | 0 |
+| literal `/ms --help` ending in LF or CRLF | success | blocked | 0 |
+| literal `/ms --help` followed by `status` on another line | failure, invalid request | blocked | 0 |
 | ordinary fixture prompt | passes through | completed | 1, to the offline fixture |
 | `:ms --help` | passes through | completed | 1, to the offline fixture |
 
@@ -43,7 +47,9 @@ The user's selected native `ms` entry with `--help` reached the model in this pr
 
 The fixture copies only this exact previously reviewed MainSequence hook definition's trust hash; it uses no live authentication and configures no MCP server. Assertions require completed turns and the above results.
 
-A terminal installation does not hot-reload a chat that was already running. After the current agent turn ends, toggle MainSequence Developer Tools off and on in the desktop Plugins settings; the installed app's plugin setting code sends `config/batchWrite` with `reloadUserConfig: true`. Alternatively, start a new Codex chat after installation. The live desktop chat's final retry remains unverified until the user performs that reload; do not claim the interface is fully working in this chat based on the fresh-process test alone.
+A terminal installation does not hot-reload a chat that was already running. Toggle MainSequence Developer Tools off and on in the desktop Plugins settings; the installed app's plugin setting code sends `config/batchWrite` with `reloadUserConfig: true`. Alternatively, start a new Codex chat after installation.
+
+The user's subsequent screenshot shows the hook blocking the native entry in this chat. Its failure exposed a second issue: the desktop composer appends a newline to submitted text, which the single-line parser rejected. The adapter now removes trailing layout whitespace before parsing while retaining rejection of embedded newlines. Adapter tests and installed-host checks accept the exact trailing-newline form with zero model requests. A successful desktop retry after that parser fix has not yet been observed.
 
 ## Remaining release checks
 

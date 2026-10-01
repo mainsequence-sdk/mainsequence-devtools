@@ -25,7 +25,9 @@ export async function handleCodexPrompt(input: unknown, dispatch: ReturnType<typ
   const event = input as { hook_event_name?: string; prompt?: string; cwd?: string };
   if (event.hook_event_name && event.hook_event_name !== 'UserPromptSubmit') return;
   if (typeof event.prompt !== 'string') return;
-  const args = commandArguments(event.prompt);
+  // The desktop composer terminates submitted text with a newline. Remove only
+  // trailing layout whitespace; embedded newlines still fail command validation.
+  const args = commandArguments(event.prompt.replace(/[ \t\r\n]+$/, ''));
   if (args === undefined) return;
   let result: ActionResult;
   try {
