@@ -165,10 +165,10 @@ async function main() {
         if (notifications.slice(failureCursor).some(message => message.method === 'turn/completed' && message.params.turn.id === failure.turn.id)) break;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      const failedRun = notifications.slice(failureCursor).find(message => message.method === 'hook/completed' && message.params.turnId === failure.turn.id)?.params.run;
+      const failedRun = notifications.slice(failureCursor).find(message => message.method === 'hook/completed' && message.params.turnId === failure.turn.id && message.params.run.sourcePath === hook.sourcePath)?.params.run;
       assert.equal(failedRun?.status, 'blocked');
       const result = failedRun.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
-      assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE');
+      assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE', `Fixture backend failure: ${result?.status}/${result?.error?.code}`);
       assert.equal(result.effects, undefined);
       assert.equal(await fs.stat(invocationPath).then(() => true).catch(() => false), false, 'The SDK workflow must not run against an unavailable backend.');
       assert.equal(modelRequests - failureBefore, 0);
@@ -177,10 +177,11 @@ async function main() {
       await request('thread/unsubscribe', { threadId: syncThread });
     }
     let liveProjectCheck;
-    if (process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT) {
+    const liveProject = process.env.MAINSEQUENCE_CODEX_SYNC_PROJECT || process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT;
+    if (liveProject) {
       // Explicit opt-in: exercise the real installed SDK, read-only, in a project
-      // whose configured backend is known to be unavailable. Never publish it.
-      const root = process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT;
+      // with either a reachable backend or a known unavailable backend.
+      const root = liveProject;
       const liveThread = (await request('thread/start', { cwd: root, ephemeral: true, model: 'offline-fixture-model', modelProvider: 'mainsequence_offline_fixture', approvalPolicy: 'never', sandbox: 'read-only', environments: [] })).thread.id;
       const cursor = notifications.length, before = modelRequests, began = Date.now();
       const turn = await request('turn/start', { threadId: liveThread, input: [{ type: 'text', text: '/ms sync --message " migrations updated fix" --dry-run --json\n', text_elements: [] }] });
@@ -188,13 +189,18 @@ async function main() {
         if (notifications.slice(cursor).some(message => message.method === 'turn/completed' && message.params.turn.id === turn.turn.id)) break;
         await new Promise(resolve => setTimeout(resolve, 50));
       }
-      const run = notifications.slice(cursor).find(message => message.method === 'hook/completed' && message.params.turnId === turn.turn.id)?.params.run;
+      const run = notifications.slice(cursor).find(message => message.method === 'hook/completed' && message.params.turnId === turn.turn.id && message.params.run.sourcePath === hook.sourcePath)?.params.run;
       assert.equal(run?.status, 'blocked');
       const result = run.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
-      assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE');
+      if (process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT) {
+        assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE', `Real-project read-only check: ${result?.status}/${result?.error?.code}`);
+      } else {
+        assert.equal(result?.status, 'success', `Real-project read-only check: ${result?.status}/${result?.error?.code}`);
+        assert.equal(result?.data?.dryRun, true);
+      }
       assert.equal(result.effects, undefined);
       assert.equal(modelRequests - before, 0);
-      liveProjectCheck = { dryRun: true, hookStatus: run.status, errorCode: result.error.code, durationMs: Date.now() - began, modelRequests: 0 };
+      liveProjectCheck = { dryRun: true, hookStatus: run.status, actionStatus: result.status, errorCode: result.error?.code, durationMs: Date.now() - began, modelRequests: 0 };
       await request('thread/unsubscribe', { threadId: liveThread });
     }
     console.log(JSON.stringify({ host: initialized.userAgent, pluginId, nativeEntry: { name: skill.name, displayName: skill.interface.displayName, enabled: skill.enabled }, hookTrust: hook.trustStatus, cases, syncCases, liveProjectCheck, realModelRequests: 0 }, null, 2));

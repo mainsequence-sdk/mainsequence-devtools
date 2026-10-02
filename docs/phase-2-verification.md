@@ -70,7 +70,7 @@ The installed-host verification now exercises valid sync commands in temporary P
 
 Run `MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT=/absolute/project/path node scripts/verify-codex-host.cjs` to additionally check an affected project's real SDK with a read-only dry run against its known unavailable backend. This opt-in check asserts a blocking backend failure and zero model requests. It does not perform a live release or push.
 
-That opt-in check was run for the affected project with the updated installed plugin: the hook returned `BACKEND_UNREACHABLE` in approximately 1.3 seconds, with zero model requests. The project's pending changes remain uncommitted because its configured backend is unavailable.
+That opt-in check was run for the affected project with the updated installed plugin: the hook returned `BACKEND_UNREACHABLE` in approximately 1.3 seconds, with zero model requests. The local backend subsequently came online. A second opt-in check using `MAINSEQUENCE_CODEX_SYNC_PROJECT=/absolute/project/path` ran the real SDK's successful read-only sync preflight through Codex in approximately four seconds, again with zero model requests. Tests did not commit, tag, or push this project's pending changes; those mutations are exercised only in the temporary fixture repositories.
 
 ## Remaining release checks
 
