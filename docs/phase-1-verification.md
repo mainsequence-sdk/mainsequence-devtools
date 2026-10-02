@@ -35,7 +35,7 @@ These are explicitly unverified and are not implied by fixture success:
 
 1. Desktop app interception before inference, visible hook results, trust review, and host timeout behavior. The chat hook remains experimental; the direct runner is the supported zero-LLM path.
 2. Live macOS/Linux credential-store round trips across all three tools and simultaneous Python/Node renewal against the real backend's refresh-token rotation policy. No cross-language renewal lock is claimed.
-3. Full installed-SDK sync through a real backend and Git remote, including server deployment-tag selection and atomic push. Fixtures exercise orchestration and Git changes, not that external deployment path.
+3. Full installed-SDK sync through a real backend and Git remote, including server deployment-tag selection and atomic push. Fixtures exercise orchestration and Git changes, not that external deployment path. No longer applicable since 2026-10-02: sync only refreshes dependency files and contacts no backend.
 4. Windows native machine persistence, which the extracted Node implementation does not support.
 5. An existing non-MCP API for backend-owned skills. Until verified, these commands are unsupported here.
 

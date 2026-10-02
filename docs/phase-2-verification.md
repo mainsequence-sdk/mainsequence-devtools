@@ -72,9 +72,15 @@ Run `MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT=/absolute/project/path node scripts/
 
 That opt-in check was run for the affected project with the updated installed plugin: the hook returned `BACKEND_UNREACHABLE` in approximately 1.3 seconds, with zero model requests. The local backend subsequently came online. A second opt-in check using `MAINSEQUENCE_CODEX_SYNC_PROJECT=/absolute/project/path` ran the real SDK's successful read-only sync preflight through Codex in approximately four seconds, again with zero model requests. Tests did not commit, tag, or push this project's pending changes; those mutations are exercised only in the temporary fixture repositories.
 
+## Dependency-only sync — 2026-10-02
+
+Sync no longer commits, tags, pushes or contacts the backend (see the ADR amendment of 2026-10-02). The stall above came from the SDK's backend lookup, which the dependency-only sync no longer makes, so the Codex backend preflight and the shared `prepareProjectAction` host callback added for it were removed; neither was in the published 0.2.0 archive. Sync dispatches exactly `code-repository sync --path .`. An installed SDK whose sync help still offers `--dry-run` or `--message` is reported unavailable with `update-sdk` as the repair, and its sync is not run. `freeze-env` was removed.
+
+The shared suite's SDK fixtures now model the released CLIs: Python prints the selected command's help, Node prints one usage text, sync refuses any argument but `--path` with exit 2 and writes only dependency files, and a second fixture advertises the retired release sync. Tests assert the exact argv, unchanged `HEAD` and tags, zero backend requests from a Codex sync, the unavailable report for the retired sync without executing it, and the `UNSUPPORTED_ACTION` answer for `freeze-env`. `scripts/verify-codex-host.cjs` now expects the dependency refresh, zero backend and model requests, and an unchanged Git state; its opt-in real-project check runs the read-only `status` and requires the `sync` capability to be available. This revised host script has not been run against an installed build yet.
+
 ## Remaining release checks
 
 - Assign a new package/plugin/catalog version before publishing the later Codex fixes, then confirm the new registry archive's integrity. Configure trusted publishing before using the release workflow for subsequent versions. Do not attempt to republish 0.2.0.
 - Manually verify the desktop renderer after restarting/reloading the app. Computer-use tooling refuses access to the Codex app, so GUI validation could not be completed automatically. The installed host runtime, event stream and CLI presentation were tested directly.
 - Check the long-operation progress, cancellation and timeout UI in the desktop host. The runner's timeout and cancellation contracts have fixture coverage, but a full-duration desktop operation was not run.
-- Validate live OS-store refresh rotation across all supported platforms and a real backend/Git setup/sync deployment. The automated suites use synthetic identities, loopback backends and temporary repositories.
+- Validate live OS-store refresh rotation across all supported platforms and a real backend/Git setup. The automated suites use synthetic identities, loopback backends and temporary repositories.

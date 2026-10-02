@@ -20,7 +20,7 @@ node dist/runner.js auth-status --backend https://api.main-sequence.app --check 
 node dist/runner.js refresh-token --backend https://api.main-sequence.app
 node dist/runner.js repositories --backend https://api.main-sequence.app --json
 node dist/runner.js status --path "/path/to/project" --json
-node dist/runner.js sync --path "/path/to/project" --message "Update environment"
+node dist/runner.js sync --path "/path/to/project"
 ```
 
 Login and session status work before either SDK is installed. Login opens the existing hosted browser authorization flow with PKCE and a loopback callback; account creation remains part of that hosted flow. The runner checks the store before opening a browser and reads back the saved pair before reporting success.
@@ -39,8 +39,7 @@ Backend selection uses an explicit `--backend`, process `MAINSEQUENCE_ENDPOINT`,
 | `resolve` | Existing backend Git-context resolution with identity/branch/ref/commit validation. |
 | `setup --uid UID --branch BRANCH --base-dir DIR [--install]` | Fetch the registered binding; reuse/register the repository SSH key; verify access; clone into `<base>/<org>/projects/<name>-<uid>`; write endpoint-only `.env`; optionally install dependencies. Existing checkout folders are never replaced. |
 | `install` | `uv sync` for Python; `npm ci` for frontend projects. |
-| `sync --message TEXT [--dry-run]` | The project-installed SDK's existing sync workflow. |
-| `freeze-env` | Python SDK `code-repository freeze-env`. |
+| `sync` | Refresh the project's dependency files with its installed SDK: Python `code-repository sync` runs `uv lock`, `uv sync` and the locked `requirements.txt` export (`mainsequence` 9.0.5 or later); Node `code-repository sync` refreshes `package-lock.json` and runs `npm ci` (`@dev-mainsequence/command-center-sdk` 0.5.13 or later). No commit message, dry run, Git command or backend request: review the changes, then commit and push them yourself. An installed SDK that still has the retired release sync (`--dry-run`/`--message` in its sync help) is reported unavailable without running it; run `update-sdk`. |
 | `sdk-status` | Isolated Python distribution metadata plus stable source version, or Node `application sdk-status`. A source version does not prove registry publication. |
 | `update-sdk [--dry-run]` | Python `code-repository update-sdk` or Node `application update-sdk`; retains the project's existing dependency policy. |
 | `update-agents` | Python SDK's packaged `AGENTS.md` managed-block update. |
@@ -51,9 +50,11 @@ Backend selection uses an explicit `--backend`, process `MAINSEQUENCE_ENDPOINT`,
 
 Python dispatch uses `.venv/bin/mainsequence` (`Scripts/mainsequence.exe` on Windows). Node dispatch executes the project's installed `@dev-mainsequence/command-center-sdk/cli/command-center-sdk.mjs` with the runner's Node executable. No global SDK or sibling source path is a fallback. Command help is checked before dispatch; missing/older capabilities produce a structured error.
 
+Versions and release tags of a CodeRepository are repository code, for example a GitHub Actions workflow; the platform deploys from Git pushes. `freeze-env` was removed because `sync` now writes the locked `requirements.txt`. For existing library callers, a sync request that still carries `message` is accepted and the message ignored, a `freeze-env` request reports `UNSUPPORTED_ACTION`, and the deprecated `sanitizeCommitMessage` export and `freezeEnv` CLI action name remain but build no command.
+
 If `.env` still contains credentials, run `env-cleanup` explicitly before SDK dispatch. It removes canonical tokens, runtime credentials, the unsupported legacy token, and the runtime credential auth-mode assignment, including `export` and whitespace forms. It preserves unrelated application settings, keeps the endpoint in the VS Code extension's block (`# BEGIN MAINSEQUENCE AUTH (managed by VS Code)` … `# END MAINSEQUENCE AUTH`) as the extension writes it, excludes `.env` from Git, and writes it atomically with private permissions. A file already in that form is not written again.
 
-Mutations hold a repository lock in the Git common directory, also covering linked worktrees. Before a clone exists, setup locks `.<folder>.mainsequence-devtools.lock` in its canonical parent directory. Cancellation stops the child process; failures after execution begins report partial or uncertain effects. Sync is never automatically retried or rolled back after commits, tags, or pushes may have happened. After an abrupt process kill, inspect running actions before manually removing the stale lock (`mainsequence-devtools.lock` in the Git common directory, or the named setup lock).
+Mutations hold a repository lock in the Git common directory, also covering linked worktrees. Before a clone exists, setup locks `.<folder>.mainsequence-devtools.lock` in its canonical parent directory. Cancellation stops the child process; failures after execution begins report partial or uncertain effects. A failed sync is never automatically retried or rolled back; the lock file, environment or exported requirements may have changed. After an abrupt process kill, inspect running actions before manually removing the stale lock (`mainsequence-devtools.lock` in the Git common directory, or the named setup lock).
 
 Raw SDK output is private and is not included in results or hook output. Progress reports command lifecycle; supported structured status metadata is filtered. Run the SDK directly in a private terminal when its detailed diagnostic output is needed. Raw credentials are never arguments, public results, or model context.
 
@@ -72,7 +73,7 @@ In Codex desktop, type `/ms` and **select `ms` from the slash menu**, then appen
 /ms login --backend https://api.main-sequence.app
 /ms refresh-token --backend https://api.main-sequence.app
 /ms status
-/ms sync --message "Update environment"
+/ms sync
 ```
 
 Selection inserts a native skill mention. The hook accepts that linked mention only when it references this plugin's own `skills/ms/SKILL.md`, then parses the single-line arguments as data; no shell expansion or evaluation occurs. It also handles literal `/ms` input if a host submits it. Ordinary prompts pass through without dispatch. Handled actions return a blocking decision on both success and failure, with readable, token-free output in the hook reason/UI message. The default help is a compact getting-started menu; `/ms --help --all` lists every supported command and `/ms COMMAND --help` shows its options. Repository results show names, branches and IDs; account/project results use readable labels and summaries. JSON is an explicit export with `--json`; default results never dump the data object. Codex's “Hook blocked this message” label means the hook stopped the prompt before inference; the result itself states whether the action succeeded or failed. The hook enforces a bounded action timeout.
@@ -86,7 +87,7 @@ import { createDevTools, createNodeHost } from '@dev-mainsequence/devtools';
 
 const tools = createDevTools({ host: createNodeHost() });
 const result = await tools.dispatch({
-  action: 'sync', root: '/path/to/project', message: 'Update environment'
+  action: 'sync', root: '/path/to/project'
 });
 ```
 

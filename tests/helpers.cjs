@@ -48,6 +48,8 @@ function browserHost(onAuthorize) {
   } };
 }
 function git(root, args) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
+// cli: true installs a project-local SDK CLI with the dependency-only sync; 'release-sync' installs one
+// released before that change, which still advertises the commit/tag sync; false installs none.
 async function project(t, type = 'python', cli = true, syncDelayMs = 0) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'ms tooling test '));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
@@ -62,24 +64,33 @@ async function project(t, type = 'python', cli = true, syncDelayMs = 0) {
   if (cli) {
     const entry = type === 'python' ? path.join(root, '.venv', 'bin', 'mainsequence') : path.join(root, 'node_modules', '@dev-mainsequence', 'command-center-sdk', 'cli', 'command-center-sdk.mjs');
     await fs.mkdir(path.dirname(entry), { recursive: true });
-    const source = `#!${process.execPath}
+    const source = `const python = ${type === 'python'}, releaseSync = ${cli === 'release-sync'};
 const args = process.argv.slice(2);
-if (args.includes('--help')) { console.log('code-repository sync --path --dry-run\napplication sdk-status --path\napplication update-sdk --path --dry-run\ncode-repository freeze-env --path\ncode-repository update --path\nskills install --path --dry-run'); process.exit(0); }
-const fs = require('node:fs'), cp = require('node:child_process');
+const fs = require('node:fs');
+if (args.includes('--help')) {
+  const usage = [
+    releaseSync ? 'code-repository sync [message] [--path <root>] [-m <message>] [--dry-run]' : 'code-repository sync [--path <root>]',
+    'application sdk-status [--path <root>] [--json]', 'application update-sdk [--path <root>] [--dry-run]',
+    'code-repository update-sdk [--path <root>] [--dry-run]', 'code-repository update [--path <root>]', 'skills install [--path <root>] [--dry-run]'];
+  // Python prints the selected command's help; the Node CLI prints one usage text for every command.
+  const command = args.slice(0, 2).join(' ') + ' ';
+  console.log((python ? usage.filter(line => line.startsWith(command)) : usage).join('\\n'));
+  process.exit(0);
+}
 fs.writeFileSync('fixture-invocation.json', JSON.stringify({args, endpoint: process.env.MAINSEQUENCE_ENDPOINT}));
 if (args[0] === 'application' && args[1] === 'sdk-status') { console.log(JSON.stringify({package:'sdk', installed:'0.5.11', status:'current', updateAvailable:false, updateSupported:true, declared:'git+https://user:fixture-password@example.test/repo?token=fixture-url-token', refresh_token:'fixture-leak'})); process.exit(0); }
-if (args[1] === 'sync' && !args.includes('--dry-run')) {
+if (args[0] === 'code-repository' && args[1] === 'sync' && !releaseSync) {
+  // Like the released SDKs: anything but --path is refused, and only dependency files change.
+  if (args.length !== 4 || args[2] !== '--path') { console.error('sync no longer takes that argument'); process.exit(2); }
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${syncDelayMs});
-  const message = args[args.indexOf('-m') + 1];
-  cp.execFileSync('git', ['add','--','change.txt']); cp.execFileSync('git', ['commit','-m',message]);
-  cp.execFileSync('git', ['tag', 'fixture-sync']);
+  for (const file of python ? ['uv.lock', 'requirements.txt'] : ['package-lock.json']) fs.writeFileSync(file, 'refreshed by the fixture sync\\n');
 }
 console.log('fixture-access-1 fixture-refresh-1 fixture-leak');
 if (process.env.FIXTURE_FAIL) process.exit(7);
 if (process.env.FIXTURE_SLOW) setTimeout(()=>{}, 10000);
 `;
     // CommonJS body in an .mjs wrapper, to emulate the installed Node CLI entry point.
-    await fs.writeFile(entry, type === 'python' ? source.replaceAll("--dry-run\n", "--dry-run\\n").replaceAll("--path\n", "--path\\n") : "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\n" + source.replace(/^#!.*\n/, '').replaceAll("--dry-run\n", "--dry-run\\n").replaceAll("--path\n", "--path\\n"), { mode: 0o755 });
+    await fs.writeFile(entry, type === 'python' ? `#!${process.execPath}\n${source}` : "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\n" + source, { mode: 0o755 });
   }
   return { root, base, git: args => git(root, args) };
 }

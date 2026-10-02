@@ -2,6 +2,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ProjectType as CodeRepositoryType } from './models';
 
+/**
+ * `freezeEnv` is deprecated and builds no invocation: the SDKs removed `code-repository freeze-env`, and
+ * `sync` now writes the locked requirements.txt. The name stays so that existing callers compile.
+ */
 export type CodeRepositoryCliAction = 'sdkStatus' | 'updateSdk' | 'sync' | 'skills' | 'freezeEnv';
 
 export type CodeRepositoryCli = {
@@ -60,7 +64,8 @@ export function resolveCodeRepositoryCli(codeRepositoryRoot: string, codeReposit
 export function buildCodeRepositoryCliInvocations(
   cli: CodeRepositoryCli,
   action: CodeRepositoryCliAction,
-  options: { commitMessage?: string } = {}
+  /** @deprecated `commitMessage` is ignored: sync takes no commit message. */
+  _options: { commitMessage?: string } = {}
 ): CodeRepositoryCliInvocation[] {
   if (!cli.available) return [];
   const args: string[][] = [];
@@ -73,9 +78,9 @@ export function buildCodeRepositoryCliInvocations(
       : ['application', 'update-sdk', '--path', '.']);
   }
   if (action === 'sync') {
-    const message = sanitizeCommitMessage(options.commitMessage);
-    if (!message) throw new Error('Commit message is required.');
-    args.push(['code-repository', 'sync', '--path', '.', '-m', message]);
+    // Python: uv lock, uv sync and the locked requirements.txt export. Node: package-lock.json and npm ci.
+    // No commit message, Git command or backend request; the person commits and pushes.
+    args.push(['code-repository', 'sync', '--path', '.']);
   }
   if (action === 'skills') {
     if (cli.codeRepositoryType === 'python') {
@@ -87,10 +92,6 @@ export function buildCodeRepositoryCliInvocations(
       args.push(['skills', 'sync', '--path', '.']);
     }
   }
-  if (action === 'freezeEnv') {
-    if (cli.codeRepositoryType !== 'python') return [];
-    args.push(['code-repository', 'freeze-env', '--path', '.']);
-  }
   return args.map((commandArgs) => ({
     executable: cli.executable,
     args: [...cli.prefixArgs, ...commandArgs],
@@ -101,7 +102,8 @@ export function buildCodeRepositoryCliInvocations(
 export function codeRepositoryActionPreview(
   codeRepositoryType: CodeRepositoryType,
   action: CodeRepositoryCliAction,
-  commitMessage = '__COMMIT_MESSAGE__'
+  /** @deprecated Ignored: sync takes no commit message. */
+  _commitMessage?: string
 ): string[] {
   const commandName = codeRepositoryType === 'python' ? 'mainsequence' : 'command-center-sdk';
   const fakeCli: CodeRepositoryCli = {
@@ -115,9 +117,10 @@ export function codeRepositoryActionPreview(
     bootstrapLabel: codeRepositoryType === 'python' ? 'Build Local .venv' : 'Install Dependencies',
     missingMessage: ''
   };
-  return buildCodeRepositoryCliInvocations(fakeCli, action, { commitMessage }).map(item => item.display);
+  return buildCodeRepositoryCliInvocations(fakeCli, action).map(item => item.display);
 }
 
+/** @deprecated Sync takes no commit message. Kept for existing callers; nothing in this package uses it. */
 export function sanitizeCommitMessage(message?: string): string {
   return String(message || '').replace(/[\r\n]+/g, ' ').trim();
 }

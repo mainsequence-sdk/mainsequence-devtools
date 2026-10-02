@@ -18,16 +18,16 @@ export async function projectCli(context: ProjectContext): Promise<Cli> {
   return { executable: cli.executable, prefix: cli.prefixArgs, available: cli.available };
 }
 async function isFile(value: string): Promise<boolean> { return fs.stat(value).then(s => s.isFile()).catch(() => false); }
-function commandArgs(context: ProjectContext, action: ProjectAction, message?: string, dryRun?: boolean): string[] | undefined {
+/** The project actions with a read-only preview. Sync has none. */
+export const DRY_RUN_ACTIONS: readonly ProjectAction[] = ['update-sdk', 'install-skills'];
+function commandArgs(context: ProjectContext, action: ProjectAction, dryRun?: boolean): string[] | undefined {
   const python = context.projectType === 'python';
   let args: string[];
   switch (action) {
-    case 'sync': {
-      const safeMessage = String(message || '').replace(/[\r\n]+/g, ' ').trim();
-      if (!safeMessage || safeMessage.includes('\0')) throw new ToolingError('INVALID_REQUEST', 'Sync requires a non-empty commit message.');
-      args = ['code-repository', 'sync', '--path', '.', '-m', safeMessage]; break;
-    }
-    case 'freeze-env': if (!python) return; args = ['code-repository', 'freeze-env', '--path', '.']; break;
+    // Sync only refreshes dependency files: Python runs uv lock, uv sync and the locked requirements.txt
+    // export; Node refreshes package-lock.json and runs npm ci. It takes no commit message and runs no
+    // Git command or backend request. The person commits and pushes.
+    case 'sync': args = ['code-repository', 'sync', '--path', '.']; break;
     case 'sdk-status': if (python) return; args = ['application', 'sdk-status', '--path', '.', '--json']; break;
     case 'update-sdk': args = [python ? 'code-repository' : 'application', 'update-sdk', '--path', '.']; break;
     case 'update-agents': if (!python) return; args = ['code-repository', 'update', 'AGENTS.md', '--path', '.']; break;
@@ -35,20 +35,31 @@ function commandArgs(context: ProjectContext, action: ProjectAction, message?: s
     default: return;
   }
   if (dryRun) {
-    if (!['sync', 'update-sdk', 'install-skills'].includes(action)) throw new ToolingError('INVALID_REQUEST', 'This action has no read-only dry-run mode.');
+    if (!DRY_RUN_ACTIONS.includes(action)) throw new ToolingError('INVALID_REQUEST', 'This action has no read-only dry-run mode.');
     args.push('--dry-run');
   }
   return args;
 }
+/** SDK CLIs from before sync became a dependency refresh still advertise its commit and preview options. */
+function advertisesReleaseSync(help: string, python: boolean): boolean {
+  // The Node CLI prints one usage text for every command; only its sync line describes sync.
+  const text = python ? help : help.split(/\r?\n/).filter(line => line.includes('code-repository sync')).join('\n');
+  return /--dry-run|--message/.test(text);
+}
 async function probe(host: HostServices, context: ProjectContext, action: ProjectAction, cli: Cli, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<ActionCapability> {
   if (!cli.available) return { action, state: 'unavailable', reason: 'The project-local SDK CLI is missing. Run install in this project.' };
-  const args = commandArgs(context, action, 'Capability probe');
+  const args = commandArgs(context, action);
   if (!args) return { action, state: 'unsupported', reason: 'This operation is not provided by this project SDK.' };
   const command = args.slice(0, 2);
   const help = await host.runProcess({ executable: cli.executable, args: [...cli.prefix, ...(context.projectType === 'python' ? command : []), '--help'], cwd: context.root, env, signal, timeoutMs: 20_000 });
   if (help.cancelled) throw new ToolingError('CANCELLED', 'The action was cancelled.');
   if (help.exitCode !== 0 || !help.stdout.includes('--path') || (context.projectType !== 'python' && !help.stdout.includes(command.join(' ')))) {
     return { action, state: 'unavailable', reason: 'The installed SDK CLI does not advertise this command. Update the project SDK or fix its environment.' };
+  }
+  // Never run the old sync: it commits, tags and pushes, and fails at a backend route that no longer exists.
+  if (action === 'sync' && advertisesReleaseSync(help.stdout, context.projectType === 'python')) {
+    const required = context.projectType === 'python' ? 'mainsequence 9.0.5' : '@dev-mainsequence/command-center-sdk 0.5.13';
+    return { action, state: 'unavailable', reason: `The installed SDK still has the retired release sync, which commits, tags and pushes. Run update-sdk: sync needs ${required} or later.` };
   }
   return { action, state: 'available' };
 }
@@ -69,7 +80,7 @@ export function projectEnvironment(context: Pick<ProjectContext, 'backend'>, inh
 }
 
 export async function projectCapabilities(host: HostServices, context: ProjectContext, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<ActionCapability[]> {
-  const actions: ProjectAction[] = ['sync', 'freeze-env', 'sdk-status', 'update-sdk', 'update-agents', 'install-skills', 'skills-sync', 'install', 'env-cleanup', 'open-folder', 'signed-terminal'];
+  const actions: ProjectAction[] = ['sync', 'sdk-status', 'update-sdk', 'update-agents', 'install-skills', 'skills-sync', 'install', 'env-cleanup', 'open-folder', 'signed-terminal'];
   if (!context.projectType) return actions.map(action => ({ action, state: 'unavailable', reason: 'Project type is ambiguous. Select --type.' }));
   const cli = await projectCli(context);
   const scoped = projectEnvironment(context, env);
@@ -117,7 +128,7 @@ async function withFileLock<T>(lock: string, work: () => Promise<T>): Promise<T>
   try { await handle.writeFile(JSON.stringify({ pid: process.pid, id: crypto.randomUUID() })); return await work(); }
   finally { await handle.close(); await fs.unlink(lock); }
 }
-export async function runProjectAction(host: HostServices, session: SessionService, context: ProjectContext, action: ProjectAction, options: { message?: string; dryRun?: boolean; env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState; fetch?: typeof fetch; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean }): Promise<unknown> {
+export async function runProjectAction(host: HostServices, session: SessionService, context: ProjectContext, action: ProjectAction, options: { dryRun?: boolean; env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState; fetch?: typeof fetch; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean }): Promise<unknown> {
   const env = projectEnvironment(context, options.env);
   if (action === 'skills-sync') {
     if (!options.allowMcpSkills) throw new ToolingError('UNSUPPORTED_ACTION', 'Backend-owned skills require MainSequence MCP. This runner does not invoke it.');
@@ -165,16 +176,13 @@ export async function runProjectAction(host: HostServices, session: SessionServi
   const cli = await projectCli(context);
   const capability = await probe(host, context, action, cli, env, options.signal);
   if (capability.state !== 'available') throw new ToolingError(capability.state === 'unsupported' ? 'UNSUPPORTED_ACTION' : 'MISSING_PREREQUISITE', capability.reason!);
-  const args = commandArgs(context, action, options.message, options.dryRun)!;
-  if (options.dryRun && !['sync', 'update-sdk', 'install-skills'].includes(action)) throw new ToolingError('INVALID_REQUEST', 'This action has no dry-run mode.');
+  const args = commandArgs(context, action, options.dryRun)!;
   if (options.dryRun) {
     const help = await host.runProcess({ executable: cli.executable, args: [...cli.prefix, ...(context.projectType === 'python' ? args.slice(0, 2) : []), '--help'], cwd: context.root, env, signal: options.signal, timeoutMs: 20_000 });
     if (!help.stdout.includes('--dry-run')) throw new ToolingError('MISSING_PREREQUISITE', 'The installed CLI does not advertise dry-run support.');
   }
   // Old .env credentials would change the SDK's identity. Require explicit cleanup first.
   if (!options.allowLegacyProjectCredentials && hasProjectCredentials(await readProjectEnv(context.root))) throw new ToolingError('INVALID_REQUEST', 'The project .env contains retired credentials. Run env-cleanup before dispatching SDK commands.');
-  // Hosts can perform bounded checks before the SDK may mutate project state.
-  await host.prepareProjectAction?.(context, action, options.signal);
   host.progress?.(`Running ${action} with the project-installed ${context.projectType === 'python' ? 'Python' : 'Node'} SDK CLI.`);
   const output = await execute(host, { executable: cli.executable, args: [...cli.prefix, ...args], cwd: context.root, env, signal: options.signal }, options.state, action !== 'sdk-status' && !options.dryRun);
   if (action === 'sdk-status') {

@@ -1,7 +1,7 @@
 import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
 import { MachineSessionService } from './session';
 import { listRepositories, projectContext, resolveBackend, resolveRepository } from './repositories';
-import { projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
+import { DRY_RUN_ACTIONS, projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
 
 export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean }) {
   const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, ...sessionOptions } = options;
@@ -37,6 +37,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
         : action === 'login' ? 'Signed in; the machine session was saved and verified.'
         : action === 'refresh-token' ? 'The saved machine session was renewed.'
         : action === 'logout' ? ((data as any).revoked ? 'The machine session was revoked and removed.' : 'The local machine session was removed; remote revocation was not confirmed.')
+        : action === 'sync' ? 'Dependency files were refreshed. Nothing was committed or pushed: review the changes, then commit and push them yourself.'
         : `${action} completed.`;
       return safeResult({ schemaVersion: 1, action, status: 'success', summary, data });
     } catch (error) {
@@ -44,7 +45,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
         : error instanceof ToolingError ? error : new ToolingError('INTERNAL_ERROR', 'The action could not complete. Check the required local tools and project permissions.');
       return safeResult({ schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message,
         error: { code: failure.code, message: failure.message },
-        ...(state.mutationStarted ? { effects: { state: 'partial-or-uncertain' as const, message: 'Files, dependencies, keys, commits, tags, or remote state may have changed. Inspect the result before retrying; no automatic rollback was attempted.' } } : {})
+        ...(state.mutationStarted ? { effects: { state: 'partial-or-uncertain' as const, message: 'Files, dependencies, keys, or remote state may have changed. Inspect the result before retrying; no automatic rollback was attempted.' } } : {})
       });
     }
   }
@@ -61,15 +62,20 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
   return { dispatch };
 }
 
-const ACTIONS = new Set(['login', 'logout', 'refresh-token', 'auth-status', 'repositories', 'status', 'resolve', 'setup', 'sync', 'freeze-env', 'sdk-status', 'update-sdk', 'update-agents', 'install-skills', 'skills-sync', 'install', 'env-cleanup', 'open-folder', 'signed-terminal']);
+const ACTIONS = new Set(['login', 'logout', 'refresh-token', 'auth-status', 'repositories', 'status', 'resolve', 'setup', 'sync', 'sdk-status', 'update-sdk', 'update-agents', 'install-skills', 'skills-sync', 'install', 'env-cleanup', 'open-folder', 'signed-terminal']);
+// Removed actions keep a specific answer, so that an older host learns what replaced them.
+const RETIRED_ACTIONS: Record<string, string> = {
+  'freeze-env': 'freeze-env was removed: sync now refreshes the lock file, the environment and requirements.txt. Run sync instead.',
+};
 export function validateRequest(request: ActionRequest): void {
+  if (request && typeof request.action === 'string' && Object.hasOwn(RETIRED_ACTIONS, request.action)) throw new ToolingError('UNSUPPORTED_ACTION', RETIRED_ACTIONS[request.action]);
   if (!request || !ACTIONS.has(request.action)) throw new ToolingError('INVALID_REQUEST', 'Unknown developer action. Run --help for supported commands.');
   if (!['login', 'logout', 'refresh-token', 'auth-status', 'repositories', 'setup'].includes(request.action) && !('root' in request)) throw new ToolingError('INVALID_REQUEST', 'A project root is required.');
   if ('root' in request && (typeof request.root !== 'string' || !request.root.trim() || request.root.includes('\0'))) throw new ToolingError('INVALID_REQUEST', 'A project root is required.');
   if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
   if ('projectType' in request && request.projectType && !['python', 'vite_react'].includes(request.projectType)) throw new ToolingError('INVALID_REQUEST', 'Project type must be python or vite_react.');
-  if (request.action === 'sync' && (typeof request.message !== 'string' || !request.message.trim() || request.message.includes('\0'))) throw new ToolingError('INVALID_REQUEST', 'Sync requires a non-empty commit message.');
-  if ('dryRun' in request && request.dryRun && !['sync', 'update-sdk', 'install-skills'].includes(request.action)) throw new ToolingError('INVALID_REQUEST', 'This action has no dry-run mode.');
+  // A sync request from an older host may still carry a commit message. Sync ignores it.
+  if ('dryRun' in request && request.dryRun && !(DRY_RUN_ACTIONS as readonly string[]).includes(request.action)) throw new ToolingError('INVALID_REQUEST', 'This action has no dry-run mode.');
   if (request.action === 'setup') {
     for (const value of [request.repositoryUid, request.branch, request.baseDir]) if (typeof value !== 'string' || !value.trim() || /[\r\n\0]/.test(value)) throw new ToolingError('INVALID_REQUEST', 'Setup requires --uid, --branch, and --base-dir.');
   }

@@ -1,19 +1,19 @@
 import { ActionResult } from '../shared/models';
 
 // Presentation belongs to the host; action models and SDK dispatch stay shared.
-const commands = [
+const commands: { action: string; title: string; usage: string; group: string; description?: string }[] = [
   { action: 'login', title: 'Sign in', usage: '/ms login', group: 'Account' },
   { action: 'auth-status', title: 'Check your login', usage: '/ms auth-status', group: 'Account' },
   { action: 'refresh-token', title: 'Renew your login', usage: '/ms refresh-token', group: 'Account' },
   { action: 'logout', title: 'Sign out', usage: '/ms logout', group: 'Account' },
   { action: 'repositories', title: 'List code repositories', usage: '/ms repositories', group: 'Projects' },
   { action: 'status', title: 'Project status', usage: '/ms status', group: 'Projects' },
-  { action: 'sync', title: 'Sync project', usage: '/ms sync --message "Describe your changes"', group: 'Projects' },
+  { action: 'sync', title: 'Refresh dependency files', usage: '/ms sync', group: 'Projects',
+    description: 'Python: updates uv.lock, the project environment and requirements.txt.\nNode: updates package-lock.json, then runs npm ci.\nNothing is committed or pushed: review the changes, then commit and push them yourself.' },
   { action: 'setup', title: 'Set up a project', usage: '/ms setup --uid UID --branch BRANCH --base-dir DIR', group: 'Projects' },
   { action: 'resolve', title: 'Find the backend repository', usage: '/ms resolve', group: 'Projects' },
   { action: 'sdk-status', title: 'SDK status', usage: '/ms sdk-status', group: 'Maintenance' },
   { action: 'install', title: 'Install dependencies', usage: '/ms install', group: 'Maintenance' },
-  { action: 'freeze-env', title: 'Save the environment', usage: '/ms freeze-env', group: 'Maintenance' },
   { action: 'update-sdk', title: 'Update the SDK', usage: '/ms update-sdk', group: 'Maintenance' },
   { action: 'update-agents', title: 'Update agent instructions', usage: '/ms update-agents', group: 'Maintenance' },
   { action: 'install-skills', title: 'Install SDK skills', usage: '/ms install-skills', group: 'Maintenance' },
@@ -28,9 +28,10 @@ export function codexHelp(argv: string[]): string {
       options.unshift('--path DIR  Choose a local project', '--type python|vite_react  Choose the project type');
     }
     if (command.action === 'auth-status') options.unshift('--check  Verify the session with the backend');
-    if (['sync', 'update-sdk', 'install-skills'].includes(command.action)) options.unshift('--dry-run  Preview the operation');
+    if (['update-sdk', 'install-skills'].includes(command.action)) options.unshift('--dry-run  Preview the operation');
     if (command.action === 'setup') options.unshift('--install  Install dependencies after setup');
-    return `MainSequence · ${command.title}\n\n${command.usage}\n\nOptions\n${options.join('\n')}\n\nAll commands: /ms --help --all`;
+    const description = command.description ? `\n\n${command.description}` : '';
+    return `MainSequence · ${command.title}\n\n${command.usage}${description}\n\nOptions\n${options.join('\n')}\n\nAll commands: /ms --help --all`;
   }
   if (argv.includes('--all')) {
     return ['MainSequence · All commands', ...['Account', 'Projects', 'Maintenance'].map(group =>

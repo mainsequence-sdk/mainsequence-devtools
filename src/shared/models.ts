@@ -1,12 +1,23 @@
 export type ProjectType = 'python' | 'vite_react';
-export type ProjectAction = 'sync' | 'freeze-env' | 'sdk-status' | 'update-sdk' | 'update-agents' | 'install-skills' | 'skills-sync' | 'install' | 'env-cleanup' | 'open-folder' | 'signed-terminal';
+export type ProjectAction = 'sync' | 'sdk-status' | 'update-sdk' | 'update-agents' | 'install-skills' | 'skills-sync' | 'install' | 'env-cleanup' | 'open-folder' | 'signed-terminal';
+/**
+ * @deprecated `freeze-env` was removed: `sync` now writes the locked requirements.txt. The request type
+ * still names it so existing callers compile; dispatch reports UNSUPPORTED_ACTION.
+ */
+export type RetiredProjectAction = 'freeze-env';
 type BackendSelection = { backend?: string };
 export type ActionRequest =
   | (BackendSelection & { action: 'login' | 'logout' | 'refresh-token' })
   | (BackendSelection & { action: 'auth-status'; check?: boolean })
   | (BackendSelection & { action: 'repositories' })
   | (BackendSelection & { action: 'status' | 'resolve'; root: string; projectType?: ProjectType })
-  | (BackendSelection & { action: ProjectAction; root: string; projectType?: ProjectType; message?: string; dryRun?: boolean })
+  | (BackendSelection & {
+    action: ProjectAction | RetiredProjectAction; root: string; projectType?: ProjectType;
+    /** @deprecated Ignored. `sync` refreshes dependency files only and takes no commit message. */
+    message?: string;
+    /** Only update-sdk and install-skills have a dry-run mode. */
+    dryRun?: boolean;
+  })
   | (BackendSelection & { action: 'setup'; repositoryUid: string; branch: string; baseDir: string; install?: boolean });
 
 export type ErrorCode = 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
@@ -51,7 +62,6 @@ export interface HostServices {
   openBrowser(url: string): Promise<boolean>;
   runProcess(spec: ProcessSpec): Promise<ProcessResult>;
   progress?(message: string): void;
-  prepareProjectAction?(context: ProjectContext, action: ProjectAction, signal?: AbortSignal): Promise<void>;
   openFolder?(root: string): Promise<void>;
   openTerminal?(spec: { root: string; env: NodeJS.ProcessEnv }): Promise<void>;
 }

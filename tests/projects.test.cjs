@@ -8,53 +8,100 @@ const { withProjectLock } = require('../dist/shared/projects.js');
 const { renderMachineEnv } = require('../dist/shared/envfile.js');
 const { canonicalRepositoryDir } = require('../dist/shared/repositories.js');
 const { saveSession } = require('../dist/shared/machineSession.js');
+const { buildCodeRepositoryCliInvocations, codeRepositoryActionPreview, sanitizeCommitMessage } = require('../dist/index.js');
 const { project, fixtureBackend, memoryStore } = require('./helpers.cjs');
 
+const exists = file => fs.stat(file).then(() => true).catch(() => false);
+
 for (const type of ['python', 'vite_react']) {
-  test(`${type}: SDK-local sync preserves argv and runs a real Git commit/tag in a path with spaces`, async t => {
+  test(`${type}: sync runs exactly code-repository sync --path . and changes no Git state, in a path with spaces`, async t => {
     const p = await project(t, type);
     const store = memoryStore();
     saveSession(store, 'https://fixture.example', { username: 'user', access: 'fixture-access-1', refresh: 'fixture-refresh-1' });
     const progress = [];
     const tooling = createDevTools({ host: createNodeHost(text => progress.push(text)), env: { ...process.env, MAINSEQUENCE_ENDPOINT: 'https://fixture.example' }, store });
-    const message = 'Commit "quotes", $(touch should-not-exist); literal $HOME';
+    const head = p.git(['rev-parse', 'HEAD']);
     await fs.writeFile(path.join(p.root, 'change.txt'), 'modified\n');
-    const result = await tooling.dispatch({ action: 'sync', root: path.join(p.root, '.git', '..'), message, projectType: type });
+    const result = await tooling.dispatch({ action: 'sync', root: path.join(p.root, '.git', '..'), projectType: type });
     assert.equal(result.status, 'success', JSON.stringify(result));
-    assert.equal(p.git(['log', '-1', '--format=%s']), message);
-    assert.equal(p.git(['tag']), 'fixture-sync');
+    assert.match(result.summary, /Dependency files were refreshed\. Nothing was committed or pushed/);
     const invocation = JSON.parse(await fs.readFile(path.join(p.root, 'fixture-invocation.json')));
-    assert.deepEqual(invocation.args, ['code-repository', 'sync', '--path', '.', '-m', message]);
+    assert.deepEqual(invocation.args, ['code-repository', 'sync', '--path', '.']);
     assert.equal(invocation.endpoint, 'https://fixture.example');
-    assert.equal(await fs.stat(path.join(p.root, 'should-not-exist')).then(()=>true).catch(()=>false), false);
+    for (const file of type === 'python' ? ['uv.lock', 'requirements.txt'] : ['package-lock.json']) assert.equal(await exists(path.join(p.root, file)), true, file);
+    assert.equal(p.git(['rev-parse', 'HEAD']), head);
+    assert.equal(p.git(['tag']), '');
+    assert.equal(p.git(['status', '--porcelain', '--', 'change.txt']), 'M change.txt', 'the person commits their own changes');
     assert.doesNotMatch(JSON.stringify({ result, progress }), /fixture-access|fixture-refresh|fixture-leak/);
-    assert.equal(await fs.stat(path.join(p.root, '.git', 'mainsequence-devtools.lock')).then(()=>true).catch(()=>false), false);
+    assert.equal(await exists(path.join(p.root, '.git', 'mainsequence-devtools.lock')), false);
+  });
+
+  test(`${type}: an installed SDK with the retired release sync is reported unavailable and never run`, async t => {
+    const p = await project(t, type, 'release-sync');
+    const head = p.git(['rev-parse', 'HEAD']);
+    const tooling = createDevTools({ host: createNodeHost(), env: {}, store: null });
+    const required = type === 'python' ? /mainsequence 9\.0\.5 or later/ : /@dev-mainsequence\/command-center-sdk 0\.5\.13 or later/;
+    const status = await tooling.dispatch({ action: 'status', root: p.root, backend: 'https://fixture.example', projectType: type });
+    const capability = status.data.capabilities.find(item => item.action === 'sync');
+    assert.equal(capability.state, 'unavailable');
+    assert.match(capability.reason, /retired release sync/); assert.match(capability.reason, /Run update-sdk/); assert.match(capability.reason, required);
+    assert.equal(status.data.capabilities.find(item => item.action === 'update-sdk').state, 'available');
+    const result = await tooling.dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', projectType: type });
+    assert.equal(result.error.code, 'MISSING_PREREQUISITE'); assert.match(result.summary, required);
+    assert.equal(result.effects, undefined);
+    assert.equal(await exists(path.join(p.root, 'fixture-invocation.json')), false, 'the old sync must not run');
+    assert.equal(p.git(['rev-parse', 'HEAD']), head);
   });
 }
 
-test('dry-run executes CLI preflight without project or Git mutation', async t => {
+test('a sync request that still carries a commit message is accepted and the message is ignored', async t => {
   const p = await project(t);
-  const head = p.git(['rev-parse', 'HEAD']);
-  const result = await createDevTools({ host: createNodeHost(), env: {}, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'preview', dryRun: true });
+  const result = await createDevTools({ host: createNodeHost(), env: {}, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'Commit "quotes", $(touch should-not-exist)' });
   assert.equal(result.status, 'success', JSON.stringify(result));
-  assert.equal(p.git(['rev-parse', 'HEAD']), head); assert.equal(p.git(['tag']), '');
-  const invocation = JSON.parse(await fs.readFile(path.join(p.root, 'fixture-invocation.json')));
-  assert.equal(invocation.args.at(-1), '--dry-run');
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(p.root, 'fixture-invocation.json'))).args, ['code-repository', 'sync', '--path', '.']);
+  assert.equal(p.git(['rev-list', '--count', 'HEAD']), '1');
+  assert.equal(await exists(path.join(p.root, 'should-not-exist')), false);
+});
+
+test('sync has no dry-run mode and never reaches the SDK with one', async t => {
+  const p = await project(t);
+  const result = await createDevTools({ host: createNodeHost(), env: {}, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', dryRun: true });
+  assert.equal(result.error.code, 'INVALID_REQUEST'); assert.equal(result.effects, undefined);
+  assert.equal(await exists(path.join(p.root, 'fixture-invocation.json')), false);
+});
+
+test('freeze-env is no longer an action; sync replaces it', async t => {
+  const p = await project(t);
+  const tooling = createDevTools({ host: createNodeHost(), env: {}, store: null });
+  const result = await tooling.dispatch({ action: 'freeze-env', root: p.root, backend: 'https://fixture.example' });
+  assert.equal(result.error.code, 'UNSUPPORTED_ACTION'); assert.match(result.summary, /freeze-env was removed: sync now refreshes/);
+  assert.equal(result.effects, undefined);
+  assert.equal(await exists(path.join(p.root, 'fixture-invocation.json')), false);
+  const status = await tooling.dispatch({ action: 'status', root: p.root, backend: 'https://fixture.example' });
+  assert.equal(status.data.capabilities.some(item => item.action === 'freeze-env'), false);
+});
+
+test('public CLI helpers build the dependency sync and no freeze-env or commit-message invocation', () => {
+  assert.deepEqual(codeRepositoryActionPreview('python', 'sync'), ['mainsequence code-repository sync --path .']);
+  assert.deepEqual(codeRepositoryActionPreview('vite_react', 'sync', 'ignored message'), ['command-center-sdk code-repository sync --path .']);
+  for (const type of ['python', 'vite_react']) assert.deepEqual(codeRepositoryActionPreview(type, 'freezeEnv'), []);
+  const cli = { codeRepositoryType: 'vite_react', commandName: 'command-center-sdk', packageName: '@dev-mainsequence/command-center-sdk', executable: '/node', prefixArgs: ['/entry.mjs'], available: true, bootstrapAction: 'installDependencies', bootstrapLabel: '', missingMessage: '' };
+  assert.deepEqual(buildCodeRepositoryCliInvocations(cli, 'sync', { commitMessage: '' }).map(item => item.args), [['/entry.mjs', 'code-repository', 'sync', '--path', '.']]);
+  assert.equal(sanitizeCommitMessage(' kept\nfor callers '), 'kept for callers');
 });
 
 test('missing project SDK is reported without falling back to a global SDK', async t => {
   const p = await project(t, 'python', false);
-  const result = await createDevTools({ host: createNodeHost(), env: {}, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'test' });
+  const result = await createDevTools({ host: createNodeHost(), env: {}, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example' });
   assert.equal(result.error.code, 'MISSING_PREREQUISITE'); assert.equal(result.effects, undefined);
 });
 
-test('sync failure after a commit reports uncertain effects without retry or rollback', async t => {
+test('sync failure reports uncertain effects without retry or rollback', async t => {
   const p = await project(t);
-  await fs.writeFile(path.join(p.root, 'change.txt'), 'partial mutation\n');
-  const result = await createDevTools({ host: createNodeHost(), env: { ...process.env, FIXTURE_FAIL: '1' }, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'partial' });
+  const result = await createDevTools({ host: createNodeHost(), env: { ...process.env, FIXTURE_FAIL: '1' }, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example' });
   assert.equal(result.error.code, 'PROCESS_FAILED', JSON.stringify(result));
   assert.equal(result.effects.state, 'partial-or-uncertain');
-  assert.equal(p.git(['rev-list', '--count', 'HEAD']), '2');
+  assert.equal(p.git(['rev-list', '--count', 'HEAD']), '1');
   assert.doesNotMatch(JSON.stringify(result), /fixture-access|fixture-refresh|fixture-leak/);
 });
 
@@ -74,7 +121,7 @@ test('cancellation stops the SDK process and reports partial effects', async t =
   const p = await project(t), controller = new AbortController();
   await fs.writeFile(path.join(p.root, 'change.txt'), 'cancelled mutation\n');
   const tooling = createDevTools({ host: createNodeHost(), env: { ...process.env, FIXTURE_SLOW: '1' }, store: null, signal: controller.signal });
-  const running = tooling.dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'cancel' });
+  const running = tooling.dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example' });
   const deadline = Date.now() + 3000;
   while (!(await fs.stat(path.join(p.root, 'fixture-invocation.json')).then(()=>true).catch(()=>false))) {
     assert.ok(Date.now() < deadline, 'SDK process started'); await new Promise(resolve => setTimeout(resolve, 10));
@@ -89,7 +136,7 @@ test('env cleanup removes export/whitespace legacy credentials, preserves app se
   assert.match(renderMachineEnv('MAINSEQUENCE_AUTH_MODE=custom_runtime_credential\n', 'https://fixture.example'), /MAINSEQUENCE_AUTH_MODE=custom_runtime_credential/);
   const p = await project(t), tooling = createDevTools({ host: createNodeHost(), env: {}, store: null });
   await fs.writeFile(path.join(p.root, '.env'), 'APP_SETTING=keep\nexport MAINSEQUENCE_ACCESS_TOKEN = old\n MAINSEQUENCE_REFRESH_TOKEN=old-r\nMAINSEQUENCE_RUNTIME_CREDENTIAL_ID=id\nMAINSEQUENCE_RUNTIME_CREDENTIAL_SECRET=secret\nMAINSEQUENCE_AUTH_MODE="runtime_credential"\nMAINSEQUENCE_TOKEN=unsupported\nMAINSEQUENCE_ENDPOINT=https://old.example\n');
-  const blocked = await tooling.dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example', message: 'test' });
+  const blocked = await tooling.dispatch({ action: 'sync', root: p.root, backend: 'https://fixture.example' });
   assert.equal(blocked.error.code, 'INVALID_REQUEST');
   const result = await tooling.dispatch({ action: 'env-cleanup', root: p.root, backend: 'https://fixture.example' });
   assert.equal(result.status, 'success');
@@ -110,7 +157,7 @@ test('env cleanup removes export/whitespace legacy credentials, preserves app se
 
 test('inherited environment credentials cannot be sent to another backend', async t => {
   const p = await project(t);
-  const result = await createDevTools({ host: createNodeHost(), env: { MAINSEQUENCE_ENDPOINT: 'https://a.example', MAINSEQUENCE_ACCESS_TOKEN: 'private-identity' }, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://b.example', message: 'test' });
+  const result = await createDevTools({ host: createNodeHost(), env: { MAINSEQUENCE_ENDPOINT: 'https://a.example', MAINSEQUENCE_ACCESS_TOKEN: 'private-identity' }, store: null }).dispatch({ action: 'sync', root: p.root, backend: 'https://b.example' });
   assert.equal(result.error.code, 'BACKEND_MISMATCH'); assert.equal(result.effects, undefined);
 });
 

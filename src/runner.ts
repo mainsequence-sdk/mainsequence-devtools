@@ -3,7 +3,7 @@ import { createDevTools } from './shared/actions';
 import { createNodeHost } from './shared/process';
 import { ActionResult, ToolingError } from './shared/models';
 import { parseArguments, HELP } from './shared/arguments';
-import { createCodexHost, handleCodexPrompt } from './hosts/codex';
+import { handleCodexPrompt } from './hosts/codex';
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -14,7 +14,8 @@ async function main() {
   process.once('SIGTERM', stop);
   // Finish a handled prompt before Codex's 600-second hook limit.
   const timer = hook ? setTimeout(stop, 550_000) : undefined;
-  const tooling = createDevTools({ host: hook ? createCodexHost() : createNodeHost(argv.includes('--json') ? undefined : message => process.stderr.write(message + '\n')), signal: controller.signal });
+  // The Codex hook reports only its final blocking result. Sync is local and needs no backend preflight.
+  const tooling = createDevTools({ host: createNodeHost(hook || argv.includes('--json') ? undefined : message => process.stderr.write(message + '\n')), signal: controller.signal });
   try {
     if (hook) {
       let stdin = '';

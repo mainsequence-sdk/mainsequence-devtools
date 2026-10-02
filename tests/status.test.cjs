@@ -7,16 +7,18 @@ const { readPythonSdkStatus } = require('../dist/shared/pythonSdkStatus.js');
 const { npmCommand } = require('../dist/shared/projects.js');
 const { project, memoryStore } = require('./helpers.cjs');
 
-test('status reports project-local capabilities and a safe session without invoking MCP', async t => {
-  const p = await project(t, 'vite_react');
-  const result = await createDevTools({ host: createNodeHost(), env: {}, store: memoryStore() }).dispatch({ action: 'status', root: p.root, backend: 'https://fixture.example' });
-  assert.equal(result.status, 'success', JSON.stringify(result));
-  assert.equal(result.data.project.projectType, 'vite_react');
-  assert.equal(result.data.capabilities.find(c => c.action === 'sync').state, 'available');
-  assert.equal(result.data.capabilities.find(c => c.action === 'freeze-env').state, 'unsupported');
-  assert.equal(result.data.capabilities.find(c => c.action === 'skills-sync').state, 'unsupported');
-  assert.equal(result.data.session.authenticated, false);
-});
+for (const type of ['python', 'vite_react']) {
+  test(`${type}: status reports project-local capabilities and a safe session without invoking MCP`, async t => {
+    const p = await project(t, type);
+    const result = await createDevTools({ host: createNodeHost(), env: {}, store: memoryStore() }).dispatch({ action: 'status', root: p.root, backend: 'https://fixture.example' });
+    assert.equal(result.status, 'success', JSON.stringify(result));
+    assert.equal(result.data.project.projectType, type);
+    assert.equal(result.data.capabilities.find(c => c.action === 'sync').state, 'available', JSON.stringify(result.data.capabilities));
+    assert.equal(result.data.capabilities.some(c => c.action === 'freeze-env'), false);
+    assert.equal(result.data.capabilities.find(c => c.action === 'skills-sync').state, 'unsupported');
+    assert.equal(result.data.session.authenticated, false);
+  });
+}
 
 test('Python SDK source status identifies stable source metadata without implying registry publication', async () => {
   let requested;
