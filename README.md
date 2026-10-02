@@ -102,7 +102,7 @@ npm run typecheck
 npm test
 npm run pack:plugin
 npm pack --ignore-scripts --pack-destination artifacts
-node scripts/verify-package.cjs artifacts/dev-mainsequence-devtools-0.2.0.tgz
+node scripts/verify-package.cjs artifacts/dev-mainsequence-devtools-0.2.1.tgz
 node scripts/verify-sdk-interop.cjs /path/to/mainsequence-sdk /path/to/command-center-sdk
 # Optional, after installing and reviewing the plugin hook:
 node scripts/verify-codex-host.cjs

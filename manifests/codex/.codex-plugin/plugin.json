@@ -1,6 +1,6 @@
 {
   "name": "mainsequence-devtools",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Select ms in the Codex slash menu to run MainSequence developer actions with a bundled deterministic runner.",
   "author": {
     "name": "MainSequence"
