@@ -7,11 +7,18 @@ const path = require('node:path');
 const http = require('node:http');
 const readline = require('node:readline');
 const { spawn } = require('node:child_process');
+const { project } = require('../tests/helpers.cjs');
 
 async function main() {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'mainsequence-codex-host-'));
   let modelRequests = 0;
+  let backendUnavailable = false;
+  const cleanups = [];
   const endpoint = http.createServer((request, response) => {
+    if (request.method === 'HEAD' && request.url === '/api/v1/') {
+      response.writeHead(backendUnavailable ? 503 : 204).end();
+      return;
+    }
     if (request.url?.includes('/responses')) modelRequests++;
     request.resume(); // Never record request headers, credentials or model context.
     response.writeHead(400, { 'content-type': 'application/json' });
@@ -21,7 +28,7 @@ async function main() {
   const pending = new Map();
   const notifications = [];
   let sequence = 0;
-  const deadline = setTimeout(() => child?.kill(), 45_000);
+  const deadline = setTimeout(() => child?.kill(), 60_000);
   try {
     await new Promise((resolve, reject) => { endpoint.once('error', reject); endpoint.listen(0, '127.0.0.1', resolve); });
     const baseUrl = `http://127.0.0.1:${endpoint.address().port}/v1`;
@@ -38,7 +45,7 @@ async function main() {
       '-c', 'features.enable_mcp_apps=false',
       '-c', 'features.remote_plugin=false',
       '-c', 'features.recommended_plugins=false',
-    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith('MAINSEQUENCE_'))) });
     child.stderr.resume();
     const request = (method, params) => new Promise((resolve, reject) => {
       const id = ++sequence;
@@ -112,11 +119,90 @@ async function main() {
       }
       cases.push({ prompt, hookStatus: run.status, actionStatus: expected, modelRequests: calls });
     }
-    console.log(JSON.stringify({ host: initialized.userAgent, pluginId, nativeEntry: { name: skill.name, displayName: skill.interface.displayName, enabled: skill.enabled }, hookTrust: hook.trustStatus, cases, realModelRequests: 0 }, null, 2));
+    // Help and missing arguments are not proof that a valid sync executes. These
+    // project-local SDK fixtures perform real commits/tags after a deliberate pause.
+    const syncCases = [];
+    for (const type of ['python', 'vite_react']) {
+      const p = await project({ after: callback => cleanups.push(callback) }, type, true, 2000);
+      await fs.writeFile(path.join(p.root, '.env'), `MAINSEQUENCE_ENDPOINT=http://127.0.0.1:${endpoint.address().port}\n`);
+      await fs.writeFile(path.join(p.root, 'change.txt'), 'sync through the installed Codex hook\n');
+      const syncThread = (await request('thread/start', { cwd: p.root, ephemeral: true, model: 'offline-fixture-model', modelProvider: 'mainsequence_offline_fixture', approvalPolicy: 'never', sandbox: 'read-only', environments: [] })).thread.id;
+      const before = modelRequests, cursor = notifications.length;
+      const prompt = `${type === 'python' ? '/ms' : mention} sync --message " migrations updated fix"\n`;
+      const input = [{ type: 'text', text: prompt, text_elements: [] }];
+      if (type !== 'python') input.push({ type: 'skill', name: skill.name, path: skill.path });
+      const turn = await request('turn/start', { threadId: syncThread, input });
+      const invocationPath = path.join(p.root, 'fixture-invocation.json');
+      const startDeadline = Date.now() + 8000;
+      while (!(await fs.stat(invocationPath).then(() => true).catch(() => false))) {
+        assert.ok(Date.now() < startDeadline, 'A valid sync must start its project-local SDK.');
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      assert.equal(modelRequests - before, 0, 'The waiting SDK must not trigger inference.');
+      assert.ok(!notifications.slice(cursor).some(message => message.method === 'turn/completed' && message.params.turn.id === turn.turn.id), 'Check zero inference while sync is still running.');
+      let completed;
+      for (let attempt = 0; attempt < 300; attempt++) {
+        completed = notifications.slice(cursor).find(message => message.method === 'turn/completed' && message.params.turn.id === turn.turn.id);
+        if (completed) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.ok(completed, 'SDK sync must return its hook result.');
+      const run = notifications.slice(cursor).find(message => message.method === 'hook/completed' && message.params.turnId === turn.turn.id && message.params.run.sourcePath === hook.sourcePath)?.params.run;
+      assert.equal(run?.status, 'blocked');
+      assert.equal(modelRequests - before, 0);
+      assert.equal(p.git(['log', '-1', '--format=%s']), 'migrations updated fix');
+      assert.equal(p.git(['tag']), 'fixture-sync');
+      const invocation = JSON.parse(await fs.readFile(invocationPath));
+      assert.deepEqual(invocation.args, ['code-repository', 'sync', '--path', '.', '-m', 'migrations updated fix']);
+      assert.equal(await fs.stat(path.join(p.root, '.git', 'mainsequence-devtools.lock')).then(() => true).catch(() => false), false);
+      syncCases.push({ projectType: type, input: type === 'python' ? 'literal' : 'native skill', sdkExecuted: true, commitCreated: true, tagCreated: true, inFlightModelRequests: 0, hookStatus: run.status, modelRequests: modelRequests - before });
+
+      backendUnavailable = true;
+      await fs.unlink(invocationPath);
+      const failureCursor = notifications.length, failureBefore = modelRequests;
+      const failure = await request('turn/start', { threadId: syncThread, input: [{ type: 'text', text: '/ms sync --message " migrations updated fix" --json\n', text_elements: [] }] });
+      for (let attempt = 0; attempt < 160; attempt++) {
+        if (notifications.slice(failureCursor).some(message => message.method === 'turn/completed' && message.params.turn.id === failure.turn.id)) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      const failedRun = notifications.slice(failureCursor).find(message => message.method === 'hook/completed' && message.params.turnId === failure.turn.id)?.params.run;
+      assert.equal(failedRun?.status, 'blocked');
+      const result = failedRun.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
+      assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE');
+      assert.equal(result.effects, undefined);
+      assert.equal(await fs.stat(invocationPath).then(() => true).catch(() => false), false, 'The SDK workflow must not run against an unavailable backend.');
+      assert.equal(modelRequests - failureBefore, 0);
+      syncCases.push({ projectType: type, backendUnavailable: true, sdkExecuted: false, hookStatus: failedRun.status, errorCode: result.error.code, modelRequests: 0 });
+      backendUnavailable = false;
+      await request('thread/unsubscribe', { threadId: syncThread });
+    }
+    let liveProjectCheck;
+    if (process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT) {
+      // Explicit opt-in: exercise the real installed SDK, read-only, in a project
+      // whose configured backend is known to be unavailable. Never publish it.
+      const root = process.env.MAINSEQUENCE_CODEX_UNAVAILABLE_PROJECT;
+      const liveThread = (await request('thread/start', { cwd: root, ephemeral: true, model: 'offline-fixture-model', modelProvider: 'mainsequence_offline_fixture', approvalPolicy: 'never', sandbox: 'read-only', environments: [] })).thread.id;
+      const cursor = notifications.length, before = modelRequests, began = Date.now();
+      const turn = await request('turn/start', { threadId: liveThread, input: [{ type: 'text', text: '/ms sync --message " migrations updated fix" --dry-run --json\n', text_elements: [] }] });
+      for (let attempt = 0; attempt < 200; attempt++) {
+        if (notifications.slice(cursor).some(message => message.method === 'turn/completed' && message.params.turn.id === turn.turn.id)) break;
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      const run = notifications.slice(cursor).find(message => message.method === 'hook/completed' && message.params.turnId === turn.turn.id)?.params.run;
+      assert.equal(run?.status, 'blocked');
+      const result = run.entries.map(entry => { try { return JSON.parse(entry.text); } catch { return null; } }).find(value => value?.schemaVersion === 1);
+      assert.equal(result?.error?.code, 'BACKEND_UNREACHABLE');
+      assert.equal(result.effects, undefined);
+      assert.equal(modelRequests - before, 0);
+      liveProjectCheck = { dryRun: true, hookStatus: run.status, errorCode: result.error.code, durationMs: Date.now() - began, modelRequests: 0 };
+      await request('thread/unsubscribe', { threadId: liveThread });
+    }
+    console.log(JSON.stringify({ host: initialized.userAgent, pluginId, nativeEntry: { name: skill.name, displayName: skill.interface.displayName, enabled: skill.enabled }, hookTrust: hook.trustStatus, cases, syncCases, liveProjectCheck, realModelRequests: 0 }, null, 2));
     await request('thread/unsubscribe', { threadId });
   } finally {
     clearTimeout(deadline);
     child?.kill();
+    for (const cleanup of cleanups.reverse()) await cleanup();
     endpoint.closeAllConnections();
     await new Promise(resolve => endpoint.close(resolve));
     await fs.rm(cwd, { recursive: true, force: true });

@@ -1,9 +1,39 @@
-import { ActionResult, ToolingError } from '../shared/models';
+import { ActionResult, HostServices, ToolingError } from '../shared/models';
 import { parseArguments, tokenizeCommand } from '../shared/arguments';
 import { createDevTools } from '../shared/actions';
 import { codexHelp, displayCodexResult } from './codexPresentation';
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
+import { createNodeHost } from '../shared/process';
+
+/** The SDK retries unavailable backends; fail before entering that long workflow. */
+export function createCodexHost(fetcher: typeof fetch = fetch): HostServices {
+  return {
+    ...createNodeHost(),
+    async prepareProjectAction(context, action, signal) {
+      if (action !== 'sync') return;
+      signal?.throwIfAborted();
+      const controller = new AbortController();
+      const stop = () => controller.abort();
+      signal?.addEventListener('abort', stop, { once: true });
+      const timer = setTimeout(stop, 5000);
+      try {
+        // No credentials, response content or redirects enter this check.
+        const response = await fetcher(`${context.backend}/api/v1/`, {
+          method: 'HEAD', redirect: 'manual', credentials: 'omit', signal: controller.signal
+        });
+        await response.body?.cancel();
+        if (response.status >= 500) throw new Error('Backend unavailable');
+      } catch {
+        if (signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
+        throw new ToolingError('BACKEND_UNREACHABLE', `Cannot connect to ${context.backend}. Start the backend or select a reachable backend with --backend URL.`);
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', stop);
+      }
+    }
+  };
+}
 
 /** The desktop slash menu serializes the selected entry as a linked skill mention. */
 function commandArguments(prompt: string): string | undefined {

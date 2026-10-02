@@ -4,9 +4,67 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
-const { handleCodexPrompt } = require('../dist/hosts/codex.js');
+const { createCodexHost, handleCodexPrompt } = require('../dist/hosts/codex.js');
 const { createDevTools, createNodeHost } = require('../dist/index.js');
 const { tokenizeCommand } = require('../dist/shared/arguments.js');
+const { project } = require('./helpers.cjs');
+
+test('an unreachable sync backend blocks promptly without invoking the SDK workflow or reporting mutations', async t => {
+  const p = await project(t);
+  const head = p.git(['rev-parse', 'HEAD']);
+  const host = createCodexHost(async (url, options) => {
+    assert.equal(url, 'https://fixture.example/api/v1/');
+    assert.equal(options.method, 'HEAD');
+    assert.equal(options.credentials, 'omit');
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.headers, undefined);
+    throw new Error('private network details');
+  });
+  const tooling = createDevTools({ host, env: {}, store: null });
+  const output = await handleCodexPrompt({ prompt: '/ms sync --message " migrations updated fix" --backend https://fixture.example --json\n', cwd: p.root }, tooling.dispatch);
+  assert.equal(output.decision, 'block');
+  const result = JSON.parse(output.reason);
+  assert.equal(result.error.code, 'BACKEND_UNREACHABLE');
+  assert.equal(result.effects, undefined);
+  assert.match(result.summary, /Start the backend/);
+  assert.doesNotMatch(output.reason, /private network details/);
+  assert.equal(p.git(['rev-parse', 'HEAD']), head);
+  assert.equal(await fs.stat(path.join(p.root, 'fixture-invocation.json')).then(() => true).catch(() => false), false);
+  assert.equal(await fs.stat(path.join(p.root, '.git', 'mainsequence-devtools.lock')).then(() => true).catch(() => false), false);
+});
+
+for (const type of ['python', 'vite_react']) {
+  test(`Codex ${type} sync executes the SDK and blocks after a real commit/tag`, async t => {
+    const p = await project(t, type);
+    await fs.writeFile(path.join(p.root, 'change.txt'), 'sync from Codex\n');
+    const host = createCodexHost(async () => new Response(null, { status: 401 }));
+    const tooling = createDevTools({ host, env: {}, store: null });
+    const output = await handleCodexPrompt({ prompt: '/ms sync --message " migrations updated fix" --backend https://fixture.example\n', cwd: p.root }, tooling.dispatch);
+    assert.equal(output.decision, 'block');
+    assert.doesNotMatch(output.reason, /Failed|schemaVersion/);
+    assert.equal(p.git(['log', '-1', '--format=%s']), 'migrations updated fix');
+    assert.equal(p.git(['tag']), 'fixture-sync');
+  });
+}
+
+test('cancelling backend preflight keeps sync out of the SDK', async () => {
+  const controller = new AbortController();
+  const host = createCodexHost(async (_url, options) => {
+    controller.abort();
+    assert.equal(options.signal.aborted, true);
+    throw new Error('aborted');
+  });
+  await assert.rejects(host.prepareProjectAction({ backend: 'https://fixture.example' }, 'sync', controller.signal), error => error.code === 'CANCELLED');
+});
+
+test('a backend that never responds has a bounded sync preflight', async () => {
+  const host = createCodexHost(async (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(new Error('private transport output')), { once: true });
+  }));
+  const started = Date.now();
+  await assert.rejects(host.prepareProjectAction({ backend: 'https://fixture.example' }, 'sync'), error => error.code === 'BACKEND_UNREACHABLE' && !error.message.includes('private transport output'));
+  assert.ok(Date.now() - started < 7000, 'An unresponsive backend must not leave sync waiting indefinitely.');
+});
 
 test('ordinary prompts pass through without dispatch; explicit /ms actions block on success and failure', async () => {
   let called = 0;

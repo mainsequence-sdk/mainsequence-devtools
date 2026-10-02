@@ -173,6 +173,8 @@ export async function runProjectAction(host: HostServices, session: SessionServi
   }
   // Old .env credentials would change the SDK's identity. Require explicit cleanup first.
   if (!options.allowLegacyProjectCredentials && hasProjectCredentials(await readProjectEnv(context.root))) throw new ToolingError('INVALID_REQUEST', 'The project .env contains retired credentials. Run env-cleanup before dispatching SDK commands.');
+  // Hosts can perform bounded checks before the SDK may mutate project state.
+  await host.prepareProjectAction?.(context, action, options.signal);
   host.progress?.(`Running ${action} with the project-installed ${context.projectType === 'python' ? 'Python' : 'Node'} SDK CLI.`);
   const output = await execute(host, { executable: cli.executable, args: [...cli.prefix, ...args], cwd: context.root, env, signal: options.signal }, options.state, action !== 'sdk-status' && !options.dryRun);
   if (action === 'sdk-status') {

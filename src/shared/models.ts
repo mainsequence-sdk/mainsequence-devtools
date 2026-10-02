@@ -51,6 +51,7 @@ export interface HostServices {
   openBrowser(url: string): Promise<boolean>;
   runProcess(spec: ProcessSpec): Promise<ProcessResult>;
   progress?(message: string): void;
+  prepareProjectAction?(context: ProjectContext, action: ProjectAction, signal?: AbortSignal): Promise<void>;
   openFolder?(root: string): Promise<void>;
   openTerminal?(spec: { root: string; env: NodeJS.ProcessEnv }): Promise<void>;
 }

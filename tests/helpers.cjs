@@ -48,7 +48,7 @@ function browserHost(onAuthorize) {
   } };
 }
 function git(root, args) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
-async function project(t, type = 'python', cli = true) {
+async function project(t, type = 'python', cli = true, syncDelayMs = 0) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'ms tooling test '));
   t.after(() => fs.rm(base, { recursive: true, force: true }));
   const root = path.join(base, 'project with spaces');
@@ -69,6 +69,7 @@ const fs = require('node:fs'), cp = require('node:child_process');
 fs.writeFileSync('fixture-invocation.json', JSON.stringify({args, endpoint: process.env.MAINSEQUENCE_ENDPOINT}));
 if (args[0] === 'application' && args[1] === 'sdk-status') { console.log(JSON.stringify({package:'sdk', installed:'0.5.11', status:'current', updateAvailable:false, updateSupported:true, declared:'git+https://user:fixture-password@example.test/repo?token=fixture-url-token', refresh_token:'fixture-leak'})); process.exit(0); }
 if (args[1] === 'sync' && !args.includes('--dry-run')) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${syncDelayMs});
   const message = args[args.indexOf('-m') + 1];
   cp.execFileSync('git', ['add','--','change.txt']); cp.execFileSync('git', ['commit','-m',message]);
   cp.execFileSync('git', ['tag', 'fixture-sync']);

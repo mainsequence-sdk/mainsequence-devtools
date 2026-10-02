@@ -92,7 +92,7 @@ const result = await tools.dispatch({
 
 The same dispatcher serves the library, CLI, and Codex hook. `HostServices` supplies browser/process execution, safe progress, cancellation, and optional native folder/terminal operations. Shared code imports no host API. Public types include `ActionRequest`, `ActionResult`, `ProjectContext`, `ActionCapability`, and `SessionStatus`. Credentials stay private to the session service.
 
-Phase 2 packages `@dev-mainsequence/devtools@0.2.0` for public npm release and migrates VS Code to that exact version. One npm artifact contains the public library, runner, and Codex plugin manifest/hooks; the standalone plugin archive comes from the same build. Public registry publication remains pending; see [release and installation](docs/phase-2-release.md). VS Code's existing SecretStorage fallback remains in that extension; Codex introduces no fallback project-token projection. Claude Code and OpenCode adapters are not created until their host execution contracts are validated.
+Phase 2 publishes `@dev-mainsequence/devtools@0.2.0` to public npm and migrates VS Code to that exact archive. One npm artifact contains the public library, runner, and Codex plugin manifest/hooks; the standalone plugin archive comes from the same build. Later Codex fixes on `main` require a new version before publication; see [release and installation](docs/phase-2-release.md). VS Code's existing SecretStorage fallback remains in that extension; Codex introduces no fallback project-token projection. Claude Code and OpenCode adapters are not created until their host execution contracts are validated.
 
 ## Verification
 
