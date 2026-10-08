@@ -11,6 +11,11 @@ const common = require('../dist/shared/machineSession.js');
 const pythonProgram = `
 import importlib.util, json, sys, types
 sdk, backend = sys.argv[1:]
+# Load CLI dependencies from this checkout without executing the SDK initializer.
+# Otherwise a new CLI import can accidentally initialize an older global SDK.
+package = types.ModuleType('mainsequence')
+package.__path__ = [sdk + '/mainsequence']
+sys.modules['mainsequence'] = package
 keyring = types.ModuleType('keyring')
 keyring.core = types.ModuleType('keyring.core')
 keyring.errors = types.ModuleType('keyring.errors')
@@ -39,6 +44,7 @@ print(json.dumps(dict(read=read, records=records, account=cfg._keychain_account_
 async function main() {
   const [pythonSdk, nodeSdk] = process.argv.slice(2);
   if (!pythonSdk || !nodeSdk) throw new Error('Usage: node scripts/verify-sdk-interop.cjs PYTHON_SDK_ROOT COMMAND_CENTER_SDK_ROOT');
+  const pythonBinary = process.env.MAINSEQUENCE_TEST_PYTHON || 'python3';
   const module = await import(pathToFileURL(path.join(path.resolve(nodeSdk), 'command-center-sdk', 'cli', 'machine-session.mjs')));
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ms-sdk-interop-'));
   try {
@@ -49,7 +55,7 @@ async function main() {
       common.saveSession(store, backend, { username: 'José', access: 'fixture-common-access', refresh: 'fixture-common-refresh' });
       assert.equal(module.sessionEntry(backend).account, common.sessionAccount(backend));
       assert.equal(module.readSession({ backend, store }).access, 'fixture-common-access');
-      const python = spawnSync('python3', ['-c', pythonProgram, path.resolve(pythonSdk), backend], {
+      const python = spawnSync(pythonBinary, ['-c', pythonProgram, path.resolve(pythonSdk), backend], {
         input: JSON.stringify(Object.fromEntries(store.records)), encoding: 'utf8', env: pythonEnv, cwd: temporary, timeout: 10_000
       });
       assert.equal(python.status, 0, 'Python source contract check failed: ' + python.stderr);
@@ -60,7 +66,7 @@ async function main() {
       assert.equal(module.readSession({ backend, store }).refresh, 'fixture-python-refresh');
       module.saveSession({ backend, store, username: 'Node fixture', access: 'fixture-node-access', refresh: 'fixture-node-refresh' });
       assert.equal(common.readSession(store, backend).access, 'fixture-node-access');
-      const pythonAgain = spawnSync('python3', ['-c', pythonProgram, path.resolve(pythonSdk), backend], { input: JSON.stringify(Object.fromEntries(store.records)), encoding: 'utf8', env: pythonEnv, cwd: temporary, timeout: 10_000 });
+      const pythonAgain = spawnSync(pythonBinary, ['-c', pythonProgram, path.resolve(pythonSdk), backend], { input: JSON.stringify(Object.fromEntries(store.records)), encoding: 'utf8', env: pythonEnv, cwd: temporary, timeout: 10_000 });
       assert.equal(pythonAgain.status, 0); assert.equal(JSON.parse(pythonAgain.stdout).read.refresh, 'fixture-node-refresh');
     }
     console.log('SDK source interoperability passed: common → Python/Node, Python → common/Node, Node → common/Python; two backend identities. Synthetic records only.');

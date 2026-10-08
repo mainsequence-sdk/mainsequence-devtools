@@ -60,7 +60,7 @@ async function main() {
         if (message.error) wait.reject(new Error(JSON.stringify(message.error))); else wait.resolve(message.result);
       } else if (message.method) notifications.push(message);
     });
-    const initialized = await request('initialize', { clientInfo: { name: 'mainsequence-host-verification', version: '0.2.0' }, capabilities: { experimentalApi: true } });
+    const initialized = await request('initialize', { clientInfo: { name: 'mainsequence-host-verification', version: require('../package.json').version }, capabilities: { experimentalApi: true } });
     child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
     const pluginId = process.env.MAINSEQUENCE_CODEX_PLUGIN_ID || 'mainsequence-devtools@mainsequence-local';
     const listed = await request('hooks/list', { cwds: [cwd] });
