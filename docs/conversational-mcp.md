@@ -6,7 +6,7 @@ With the updated plugin loaded and a usable Main Sequence developer session, ask
 2. "Add metatable-mcp."
 3. "Use it to list my tables."
 
-Codex discovers the directory, saves your selection, reads that project's current tools and invokes them through the bundled client. You do not need a slash command, settings edit or restart between adding a project and using it. Saved selections work in later conversations. When multiple releases have the same name, select the intended release/Environment.
+Codex discovers the directory, saves your selection, reads that project's current tools and invokes them through the bundled client. You do not need a slash command, settings edit or restart between adding a project and using it. Saved selections work in later conversations. Discovery and saved connections include organization_environment_name. Show the MCP name and Environment name first; resolve the chosen pair to its release UID internally. When names remain ambiguous, show the IDs needed to distinguish them.
 
 Connections are owned by the plugin. They do not create separate entries in Codex's native MCP list. Installing or updating the plugin itself still follows the host's plugin lifecycle.
 

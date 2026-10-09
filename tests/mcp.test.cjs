@@ -62,7 +62,8 @@ async function fixture(t) {
   const row = (releaseUid = uid) => ({ uid: releaseUid, name: 'metatable-mcp', release_kind: 'fastapi',
     mcp_connection: { url: state.endpoint || project + '/mcp', transport: 'streamable-http',
       resource_metadata_url: backend + '/.well-known/oauth-protected-resource/mcp?resource_release_uid=' + releaseUid,
-      organization_environment_uid: 'ba034541-73b4-4c5b-81ad-16516d8a8f94', active_revision_uid: '21fe3fba-e8fa-4010-b2bd-4a16d873ec28' } });
+      organization_environment_name: releaseUid === uid ? 'Research' : 'Production',
+      organization_environment_uid: releaseUid === uid ? 'ba034541-73b4-4c5b-81ad-16516d8a8f94' : '9d85df93-3ec5-48cb-802b-bc8d84bb06e4', active_revision_uid: '21fe3fba-e8fa-4010-b2bd-4a16d873ec28' } });
   backend = await listen(async (req, res) => {
     const message = await body(req);
     calls.push({ server: 'platform', path: req.url, method: message?.method, authorization: req.headers.authorization });
@@ -103,16 +104,20 @@ test('conversation workflow discovers, saves, immediately calls and remembers MC
   const f = await fixture(t);
   const discovered = await f.dispatch('mcp-discover');
   assert.equal(discovered.status, 'success'); assert.equal(discovered.data.count, 2);
+  assert.deepEqual(discovered.data.results.map(row => [row.name, row.mcp_connection.organization_environment_name]),
+    [['metatable-mcp', 'Research'], ['metatable-mcp', 'Production']]);
   assert.equal((await f.dispatch('mcp-list')).data.length, 0);
   const added = await f.dispatch('mcp-add');
   assert.equal(added.status, 'success'); assert.equal(added.data.tools.length, 2);
+  assert.equal(added.data.connection.mcp_connection.organization_environment_name, 'Research');
   assert.equal(added.data.tools[1].annotations.destructiveHint, true, 'ordinary write tools are available');
   await f.dispatch('mcp-add'); assert.equal((await f.dispatch('mcp-list')).data.length, 1, 'repeat add is idempotent');
   const invoked = await f.dispatch('mcp-call', { tool: 'set_value', arguments: { value: 42 } }, f.create());
   assert.equal(invoked.status, 'success'); assert.equal(invoked.data.structuredContent.value, 42);
   assert.equal(f.state.invoked, 1);
   assert.equal((await f.dispatch('mcp-add', { releaseUid: f.secondUid })).status, 'success');
-  assert.equal((await f.dispatch('mcp-list')).data.length, 2, 'same display name is disambiguated by UID');
+  assert.deepEqual((await f.dispatch('mcp-list', {}, f.create())).data.map(row => row.mcp_connection.organization_environment_name),
+    ['Research', 'Production'], 'saved names survive another client instance and distinguish same-named MCPs');
   for (const output of [discovered, added, invoked, await f.dispatch('mcp-tools'), await fs.readFile(f.file, 'utf8')]) {
     assert.doesNotMatch(JSON.stringify(output), /private-platform-token|private-release-credential|private-refresh-token/);
   }

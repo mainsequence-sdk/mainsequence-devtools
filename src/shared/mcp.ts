@@ -15,7 +15,7 @@ export type McpRequest = { backend?: string } & (
 type Connection = {
   backend: string; resource_release_uid: string; name: string;
   mcp_connection: { url: string; transport: 'streamable-http'; resource_metadata_url: string;
-    organization_environment_uid: string; active_revision_uid: string };
+    organization_environment_uid: string; organization_environment_name: string; active_revision_uid: string };
 };
 
 function uuid(value: unknown): string {
@@ -39,6 +39,9 @@ function connection(backend: string, row: any): Connection {
   if (!c || c.transport !== 'streamable-http' || typeof row.name !== 'string' || !row.name.trim()) {
     throw new ToolingError('API_ERROR', 'The selected release has no active platform MCP connection.');
   }
+  if (typeof c.organization_environment_name !== 'string' || !c.organization_environment_name.trim()) {
+    throw new ToolingError('API_ERROR', 'The backend returned no MCP Environment name.');
+  }
   const url = endpoint(c.url);
   if (new URL(url).pathname !== '/mcp') throw new ToolingError('API_ERROR', 'The release returned a non-canonical MCP endpoint.');
   const releaseUid = uuid(row.resource_release_uid ?? row.uid), metadataUrl = endpoint(c.resource_metadata_url, true);
@@ -47,7 +50,7 @@ function connection(backend: string, row: any): Connection {
     || metadataQuery.get('resource_release_uid') !== releaseUid) throw new ToolingError('API_ERROR', 'The MCP metadata targets another release.');
   return { backend: requireBackend(backend), resource_release_uid: releaseUid, name: row.name,
     mcp_connection: { url, transport: 'streamable-http', resource_metadata_url: metadataUrl,
-      organization_environment_uid: uuid(c.organization_environment_uid), active_revision_uid: uuid(c.active_revision_uid) } };
+      organization_environment_uid: uuid(c.organization_environment_uid), organization_environment_name: c.organization_environment_name, active_revision_uid: uuid(c.active_revision_uid) } };
 }
 function storagePath(env: NodeJS.ProcessEnv): string {
   const dir = process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'MainSequenceCLI')

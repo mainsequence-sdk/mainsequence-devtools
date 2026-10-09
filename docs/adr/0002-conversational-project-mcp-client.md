@@ -1,5 +1,7 @@
 # ADR 0002: Conversational project MCP connections in the Codex plugin
 
+Amended 2026-10-09 for the owner-reported discovery display gap: retain organization_environment_name from the canonical directory and release detail, including in saved metadata, and show MCP and Environment names before IDs. Identity remains backend plus release UID; no native host registration or authorization behavior changes.
+
 Date: 2026-10-09
 
 Status: Accepted for implementation by the owner's instruction, "OK then extend the codex plugin", following the explicit proposal to use a bundled client instead of native Codex MCP registration.
@@ -28,7 +30,7 @@ Discovery initializes central POST /mcp and calls resource_release.mcp_endpoints
 
 Add selects a release UID, rereads the authenticated release detail, validates its current connection, exchanges a release credential, initializes the project and enumerates its paginated tools before saving. Repeated add replaces only the same backend/UID record. Duplicate display names require selecting a UID. Arbitrary caller-provided project URLs are not accepted.
 
-Saved records contain only backend, release UID, display name, and the canonical MCP connection metadata (URL, transport, resource metadata URL, Environment UID, active revision UID). Store them in mcp-connections.json next to the existing CLI configuration:
+Saved records contain only backend, release UID, display name, and the canonical MCP connection metadata (URL, transport, resource metadata URL, Environment UID and name, active revision UID). Store them in mcp-connections.json next to the existing CLI configuration:
 
 - macOS: ~/Library/Application Support/MainSequenceCLI/
 - Linux: ~/.config/mainsequence/

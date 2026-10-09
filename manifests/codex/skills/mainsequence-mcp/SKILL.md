@@ -10,8 +10,8 @@ This workflow uses a client inside the plugin. Saved project connections can be 
 ## Find and connect
 
 - For "which MCPs are available?", execute the runner with mcp-discover --json. It calls resource_release.mcp_endpoints on the platform MCP. Use --search TEXT, --limit N (up to 100), and --offset N when needed; count reports the full matching collection.
-- Show names, release UIDs and Environment UIDs where needed to distinguish results. Discovery alone does not authorize adding every result.
-- For "add metatable-mcp", identify the exact discovered release. If the name identifies multiple releases, ask which one. Execute mcp-add --uid RELEASE_UUID --json. Success means initialization and tool discovery succeeded and the connection was saved. Use the returned tool catalog immediately.
+- Show the MCP name and mcp_connection.organization_environment_name. Keep release and Environment UIDs for exact calls; display IDs only if names remain ambiguous or the user asks for them. Discovery alone does not authorize adding every result.
+- For "add metatable-mcp", identify the exact discovered release. If the name identifies multiple releases, ask which Environment by name. Resolve the selected name pair to its release UID internally. Execute mcp-add --uid RELEASE_UUID --json. Success means initialization and tool discovery succeeded and the connection was saved. Use the returned tool catalog immediately.
 - For saved connections, execute mcp-list --json. This is local metadata, not a live health report; do not rediscover the whole directory every time the user wants to use one.
 - When asked to remove a saved connection, execute mcp-remove --uid RELEASE_UUID --json. This does not revoke the Main Sequence login.
 
