@@ -1,5 +1,7 @@
 # ADR 0001: Shared developer tooling for Codex, VS Code, and future hosts
 
+Amended 2026-10-09 by owner request to extend the Codex plugin with conversational project MCP connections. [ADR 0002](0002-conversational-project-mcp-client.md) owns the client, remembered selections, authentication reuse and native-host limitation. The no-MCP/no-model execution statements below describe the original deterministic developer actions; the new conversational skill guides the harness to a bundled MCP client. The runner itself makes no LLM API calls.
+
 - **Status:** Accepted; phases 1 and 2 implemented.
 - **Date:** 2026-09-30
 - **Scope:** Developer tooling and its distribution across editor and agent hosts.
@@ -40,6 +42,8 @@ There is an important compatibility exception: when no machine store is reachabl
 For this ADR, **“upstream the npm part” means publishing this repository's shared tooling as an npm package and making VS Code consume that package**. Moving the existing Command Center CLI implementation out of its SDK is a separate architectural change, outside these two phases.
 
 ## Decision
+
+The shared package also owns the conversational project MCP client specified in ADR 0002. Its automatically discoverable skill is separate from the explicit-only ms command entry. Both use the same bundled runner and existing developer session.
 
 Use this existing `codex-plugin` repository as the source of the shared developer-tooling implementation, its command runner, and host adapters.
 

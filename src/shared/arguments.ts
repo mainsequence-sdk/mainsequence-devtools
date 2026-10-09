@@ -1,9 +1,15 @@
+import { readFileSync, statSync } from 'node:fs';
+import type { McpRequest } from './mcp';
 import { ActionRequest, ProjectType, ToolingError } from './models';
 
 export const HELP = `MainSequence developer tooling (Node 22+)
 
 ms-devtools login|logout|refresh-token|auth-status|repositories [--backend URL]
 ms-devtools auth-status [--check] [--backend URL]
+ms-devtools mcp-discover [--search TEXT] [--limit N] [--offset N] [--backend URL]
+ms-devtools mcp-list [--backend URL]
+ms-devtools mcp-add|mcp-remove|mcp-tools --uid RELEASE_UUID [--backend URL]
+ms-devtools mcp-call --uid RELEASE_UUID --tool NAME [--arguments-file JSON_FILE] [--backend URL]
 ms-devtools status|resolve [--path ROOT] [--type python|vite_react] [--backend URL]
 ms-devtools sync [--path ROOT]
 ms-devtools sdk-status|update-sdk|update-agents|install-skills|install|env-cleanup [--path ROOT]
@@ -24,7 +30,7 @@ export function parseArguments(argv: string[], cwd = process.cwd()): { request?:
   const action = argv[0];
   const flags: Record<string, string | boolean> = {};
   const boolean = new Set(['--json', '--check', '--dry-run', '--install']);
-  const valued = new Set(['--backend', '--path', '--type', '--uid', '--branch', '--base-dir']);
+  const valued = new Set(['--backend', '--path', '--type', '--uid', '--branch', '--base-dir', '--search', '--limit', '--offset', '--tool', '--arguments-file']);
   for (let i = 1; i < argv.length; i++) {
     const key = argv[i];
     if (key === '--help' || key === '-h') return { json: argv.includes('--json'), help: true };
@@ -41,7 +47,11 @@ export function parseArguments(argv: string[], cwd = process.cwd()): { request?:
   }
   const global = ['--backend', '--json'];
   const project = ['--path', '--type'];
-  const allowed = ['login', 'logout', 'refresh-token', 'repositories'].includes(action) ? global
+  const allowed = action === 'mcp-discover' ? [...global, '--search', '--limit', '--offset']
+    : action === 'mcp-list' ? global
+    : ['mcp-add', 'mcp-remove', 'mcp-tools'].includes(action) ? [...global, '--uid']
+    : action === 'mcp-call' ? [...global, '--uid', '--tool', '--arguments-file']
+    : ['login', 'logout', 'refresh-token', 'repositories'].includes(action) ? global
     : action === 'auth-status' ? [...global, '--check']
     : action === 'setup' ? [...global, '--uid', '--branch', '--base-dir', '--install']
     : [...global, ...project, ...(['update-sdk', 'install-skills'].includes(action) ? ['--dry-run'] : [])];
@@ -49,7 +59,21 @@ export function parseArguments(argv: string[], cwd = process.cwd()): { request?:
   const backend = typeof flags['--backend'] === 'string' ? flags['--backend'] : undefined;
   const common = { backend };
   let request: ActionRequest;
-  if (['login', 'logout', 'refresh-token', 'repositories'].includes(action)) request = { action, ...common } as ActionRequest;
+  if (['mcp-discover', 'mcp-list', 'mcp-add', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(action)) {
+    let args: Record<string, unknown> = {};
+    if (typeof flags['--arguments-file'] === 'string') {
+      try {
+        if (statSync(flags['--arguments-file']).size > 1_000_000) throw new Error();
+        args = JSON.parse(readFileSync(flags['--arguments-file'], 'utf8'));
+        if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error();
+      } catch { throw new ToolingError('INVALID_REQUEST', 'The arguments file must contain a JSON object of at most 1 MB.'); }
+    }
+    request = { action, ...common, ...(flags['--uid'] ? { releaseUid: flags['--uid'] } : {}),
+      ...(flags['--search'] !== undefined ? { search: flags['--search'] } : {}),
+      ...(flags['--limit'] !== undefined ? { limit: Number(flags['--limit']) } : {}),
+      ...(flags['--offset'] !== undefined ? { offset: Number(flags['--offset']) } : {}),
+      ...(action === 'mcp-call' ? { tool: flags['--tool'], arguments: args } : {}) } as McpRequest;
+  } else if (['login', 'logout', 'refresh-token', 'repositories'].includes(action)) request = { action, ...common } as ActionRequest;
   else if (action === 'auth-status') request = { action, ...common, check: Boolean(flags['--check']) };
   else if (action === 'setup') request = { action, ...common, repositoryUid: flags['--uid'] as string, branch: flags['--branch'] as string, baseDir: flags['--base-dir'] as string, install: Boolean(flags['--install']) };
   else request = { action, ...common, root: flags['--path'] as string || cwd, projectType: flags['--type'] as ProjectType | undefined, dryRun: Boolean(flags['--dry-run']) } as ActionRequest;

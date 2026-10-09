@@ -15,6 +15,8 @@ async function main() {
     const pkg = JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8'));
     if (manifest.version !== pkg.version || manifest.hooks !== './hooks/hooks.json') throw new Error('The npm artifact must contain the versioned Codex compatibility manifest.');
     if (manifest.skills !== './skills/' || !await fs.stat(path.join(packageDir, 'skills/ms/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the native ms slash-menu registration.');
+    if (!await fs.stat(path.join(packageDir, 'skills/mainsequence-mcp/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the conversational MCP skill.');
+    if (!await fs.stat(path.join(packageDir, 'dist/shared/mcp.js')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the MCP client.');
     if (await fs.stat(path.join(packageDir, 'plugin.json')).then(() => true).catch(() => false)) throw new Error('A root Agent Plugins manifest suppresses hooks in the tested Codex runtime.');
     await fs.writeFile(path.join(temporary, 'consumer.mjs'), `
 import assert from 'node:assert/strict';

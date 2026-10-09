@@ -10,6 +10,8 @@ assert.equal(manifest.version, pkg.version);
 assert.equal(manifest.hooks, './hooks/hooks.json');
 assert.equal(manifest.skills, './skills/');
 assert.equal(fs.existsSync('skills/ms/SKILL.md'), true);
+assert.equal(fs.existsSync('skills/mainsequence-mcp/SKILL.md'), true);
+assert.equal(fs.existsSync('dist/shared/mcp.js'), true);
 assert.equal(fs.existsSync('plugin.json'), false, 'A portable root manifest skips hooks in Codex 0.159.2');
 assert.equal(build.version, pkg.version);
 assert.equal(marketplace.plugins[0].source.package, pkg.name);

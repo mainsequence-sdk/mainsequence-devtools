@@ -22,3 +22,5 @@ export type { CodeRepositoryCli, CodeRepositoryCliAction, CodeRepositoryCliInvoc
 
 export { pythonExecutable, hasPythonProject, projectVersion, readPythonSdkStatus as readPythonProjectSdkStatus, PYTHON_SDK_PROJECT_URL } from './shared/pythonProjectStatus';
 export type { CaptureProcess } from './shared/pythonProjectStatus';
+
+export type { McpRequest } from './shared/mcp';

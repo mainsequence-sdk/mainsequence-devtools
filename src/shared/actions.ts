@@ -1,10 +1,11 @@
+import { McpConnections, McpRequest } from './mcp';
 import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
 import { MachineSessionService } from './session';
 import { listRepositories, projectContext, resolveBackend, resolveRepository } from './repositories';
 import { DRY_RUN_ACTIONS, projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
 
-export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean }) {
-  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, ...sessionOptions } = options;
+export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string }) {
+  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, ...sessionOptions } = options;
   const session = suppliedSession ?? new MachineSessionService(host, sessionOptions);
   const env = { ...(options.env ?? process.env) };
   async function dispatch(request: ActionRequest): Promise<ActionResult> {
@@ -13,6 +14,10 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
     try {
       validateRequest(request);
       options.signal?.throwIfAborted();
+      if (action.startsWith('mcp-')) {
+        const backend = await resolveBackend(request.backend, process.cwd(), env);
+        return safeResult(await new McpConnections(session, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs }).dispatch(request as McpRequest, backend));
+      }
       let data: unknown;
       if (['login', 'logout', 'refresh-token', 'auth-status', 'repositories'].includes(action)) {
         const backend = await resolveBackend(request.backend, undefined, env);
@@ -68,6 +73,10 @@ const RETIRED_ACTIONS: Record<string, string> = {
   'freeze-env': 'freeze-env was removed: sync now refreshes the lock file, the environment and requirements.txt. Run sync instead.',
 };
 export function validateRequest(request: ActionRequest): void {
+  if (request && ['mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(request.action)) {
+    if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
+    return;
+  }
   if (request && typeof request.action === 'string' && Object.hasOwn(RETIRED_ACTIONS, request.action)) throw new ToolingError('UNSUPPORTED_ACTION', RETIRED_ACTIONS[request.action]);
   if (!request || !ACTIONS.has(request.action)) throw new ToolingError('INVALID_REQUEST', 'Unknown developer action. Run --help for supported commands.');
   if (!['login', 'logout', 'refresh-token', 'auth-status', 'repositories', 'setup'].includes(request.action) && !('root' in request)) throw new ToolingError('INVALID_REQUEST', 'A project root is required.');

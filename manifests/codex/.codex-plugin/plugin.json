@@ -1,7 +1,7 @@
 {
   "name": "mainsequence-devtools",
   "version": "0.2.1",
-  "description": "Select ms in the Codex slash menu to run MainSequence developer actions with a bundled deterministic runner.",
+  "description": "Use MainSequence project MCPs from conversation and run explicit developer commands with the bundled runner.",
   "author": {
     "name": "MainSequence"
   },
@@ -10,7 +10,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "MainSequence Developer Tools",
-    "shortDescription": "Run explicit MainSequence developer commands without inference.",
+    "shortDescription": "Use project MCPs and run MainSequence developer commands.",
     "developerName": "MainSequence",
     "category": "Productivity",
     "websiteUrl": "https://www.main-sequence.io/",

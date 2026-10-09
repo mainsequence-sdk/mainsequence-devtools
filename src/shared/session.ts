@@ -1,6 +1,7 @@
 // Extracted from ms-vscode-extension/src/api.ts and authSession.ts (0.1.45).
 // Host-independent machine mode; the VS Code legacy fallback stays with that host.
 import * as crypto from 'crypto';
+import { readMcpResponse } from './mcpTransport';
 import * as http from 'http';
 import { normalizeBackendUrl } from './config';
 import { clearSession, CredentialStore, ForeignEntryError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
@@ -123,7 +124,7 @@ export class MachineSessionService implements SessionService {
   }
   private async http<T>(backend: string, method: string, apiPath: string, body?: unknown, access?: string): Promise<T> {
     this.options.signal?.throwIfAborted();
-    if (!/^\/(api|auth)\//.test(apiPath) || apiPath.includes('..')) throw new ToolingError('INVALID_REQUEST', 'Only existing /api/ or /auth/ endpoints can be requested.');
+    if ((apiPath !== '/mcp' && !/^\/(api|auth)\//.test(apiPath)) || apiPath.includes('..')) throw new ToolingError('INVALID_REQUEST', 'Only existing /api/, /auth/, or central /mcp endpoints can be requested.');
     const controller = new AbortController();
     const abort = () => controller.abort();
     this.options.signal?.addEventListener('abort', abort, { once: true });
@@ -131,11 +132,12 @@ export class MachineSessionService implements SessionService {
     try {
       const response = await (this.options.fetch ?? fetch)(backend + apiPath, {
         method, redirect: 'error', signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', ...(access ? { Authorization: `Bearer ${access}` } : {}) },
+        headers: { 'Content-Type': 'application/json', ...(apiPath === '/mcp' ? { Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25' } : {}), ...(access ? { Authorization: `Bearer ${access}` } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body)
       });
       if (response.status === 401 || response.status === 403) throw new ToolingError('AUTH_REJECTED', 'The backend rejected the selected credentials.');
       if (!response.ok) throw new ToolingError('API_ERROR', `The backend returned HTTP ${response.status}.`);
+      if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>) as T;
       if (response.status === 204) return undefined as T;
       try { return await response.json() as T; } catch { throw new ToolingError('API_ERROR', 'The backend returned an invalid JSON response.'); }
     } catch (error) {
