@@ -30,7 +30,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
         data = await setupRepository(host, session, { ...request, backend: await resolveBackend(request.backend, undefined, env) }, { env, signal: options.signal, state });
       } else if ('root' in request) {
         const context = await projectContext(host, request.root, request.backend, request.projectType, env, options.signal);
-        if (request.action === 'status') data = { project: context, capabilities: await projectCapabilities(host, context, env, options.signal), session: await session.status(context.backend) };
+        if (request.action === 'status') data = { project: context, capabilities: await projectCapabilities(host, context, env, options.signal, allowMcpSkills), session: await session.status(context.backend) };
         else if (request.action === 'resolve') data = { project: context, resolution: await resolveRepository(session, context) };
         else {
           const operation = () => runProjectAction(host, session, context, request.action as ProjectAction, { ...request, env, signal: options.signal, state, fetch: options.fetch, allowMcpSkills, allowLegacyProjectCredentials });

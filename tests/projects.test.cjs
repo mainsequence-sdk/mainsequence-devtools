@@ -197,3 +197,13 @@ test('canonical repository layout rejects path traversal UIDs', () => {
   assert.equal(canonicalRepositoryDir('/base', 'Fixture Org', 'uid-1', 'My Repo'), '/base/fixture-org/projects/my-repo-uid-1');
   for (const uid of ['../bad', '..', '.', 'a/b']) assert.throws(() => canonicalRepositoryDir('/base', 'org', uid, 'name'));
 });
+
+test('MCP skills capability follows the explicit host opt-in while the default stays unsupported', async t => {
+  const p = await project(t);
+  for (const enabled of [false, true]) {
+    const result = await createDevTools({ host: createNodeHost(), env: {}, store: null, allowMcpSkills: enabled }).dispatch({ action: 'status', root: p.root, backend: 'https://fixture.example' });
+    assert.equal(result.status, 'success');
+    const capability = result.data.capabilities.find(item => item.action === 'skills-sync');
+    assert.equal(capability.state, enabled ? 'available' : 'unsupported');
+  }
+});

@@ -1,7 +1,7 @@
 {
   "name": "@dev-mainsequence/devtools",
-  "version": "0.2.1",
-  "description": "Shared MainSequence developer actions and deterministic Codex adapter",
+  "version": "0.2.2",
+  "description": "Shared MainSequence developer actions, project operations and deterministic Codex adapter",
   "license": "MIT",
   "engines": {
     "node": ">=22"
