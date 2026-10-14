@@ -4,6 +4,14 @@ One repository, one npm package, one lockfile. Both SDKs remain unchanged.
 
 ## Artifacts
 
+The additive 0.2.2 release is now published on public npm. It exposes shared
+project operations for independent integrations. Claude Desktop 0.3.1 pins that
+registry archive; its source, lockfile, marketplace and releases live in
+[mainsequence-claude-desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop).
+The existing Codex marketplace and VS Code pin remain on 0.2.1. See
+[integration ownership](integration-roadmap.md) and the
+[shared project API](shared-project-operations.md).
+
 `@dev-mainsequence/devtools@0.2.1` contains the public TypeScript/JavaScript API, `ms-devtools` runner, `.codex-plugin/plugin.json`, the explicit-only `ms` skill registration, hooks and version metadata. The npm registry can therefore serve both VS Code's build dependency and Codex's marketplace package source. No package is downloaded when an action executes. The supported Codex compatibility manifest is required here: the tested 0.159.2 runtime recognized a root Agent Plugins manifest but skipped its hooks. Shipping both selected the root format and suppressed the hook, so this package deliberately omits root `plugin.json`. The installed 0.2.1 plugin also passes the actual-host checks on Codex 0.162.0-alpha.2.
 
 The same build produces `artifacts/codex/mainsequence-devtools/`, the standalone plugin archive, and a local marketplace at `artifacts/local-marketplace/`. VS Code pins the package and copies the compiled distribution into `out/vendor/devtools` during compile; its VSIX includes that copy with version metadata. No new shared repository or npm workspace is needed.
