@@ -17,12 +17,14 @@ pin, host verification and release. No new repositories are created for it now.
 The 0.2.2 core release adds reusable project operations without publishing pending
 OpenCode changes from the development checkout. That checkout retains its planned
 0.3.0 version and existing changes. Both current repositories are public; no
-visibility change is required. The Claude migration targets independently versioned
-0.3.1 consuming devtools 0.2.2. Previously published Claude 0.3.0 remains an immutable preview.
+visibility change is required. Claude 0.3.1 independently consumes devtools 0.2.2.
+Previously published Claude 0.3.0 remains an immutable preview.
 
-Publication status on 2026-10-14: the shared API is merged, but the 0.2.2 npm publish
-was rejected by registry authentication. The public devtools marketplace stays on
-0.2.1. [Claude migration PR #1](https://github.com/mainsequence-sdk/mainsequence-claude-desktop/pull/1)
-remains draft until registry publication, generation of its registry lockfile and a
-fresh consumer verification succeed. Claude's marketplace continues to advertise
-the existing 0.3.0 preview.
+Publication verified on 2026-10-14: devtools 0.2.2 is available from public npm,
+and [Claude migration PR #1](https://github.com/mainsequence-sdk/mainsequence-claude-desktop/pull/1)
+is merged. The [Claude 0.3.1 preview](https://github.com/mainsequence-sdk/mainsequence-claude-desktop/releases/tag/v0.3.1)
+uses a registry lockfile and passed a fresh dependency install, Linux/macOS CI,
+anonymous archive/checksum download and isolated native-engine installation.
+Its marketplace advertises the verified 0.3.1 ZIP. The existing Codex marketplace
+and VS Code dependency remain on 0.2.1; this release does not migrate those hosts.
+Live Claude GUI/account acceptance remains tracked in the Claude repository.
