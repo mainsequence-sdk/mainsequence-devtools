@@ -15,8 +15,13 @@ assert.equal(fs.existsSync('dist/shared/mcp.js'), true);
 assert.equal(fs.existsSync('plugin.json'), false, 'A portable root manifest skips hooks in Codex 0.159.2');
 assert.equal(build.version, pkg.version);
 assert.equal(marketplace.plugins[0].source.package, pkg.name);
-assert.equal(marketplace.plugins[0].source.version, pkg.version);
+// The public catalog may stay on the last published version while a new package
+// is prepared. Advance it only after registry publication has been verified.
+const catalogVersion = marketplace.plugins[0].source.version;
+assert.match(catalogVersion, /^\d+\.\d+\.\d+$/);
+const incoming = pkg.version.split('.').map(Number), published = catalogVersion.split('.').map(Number);
+assert.ok(!published.some((n, i) => n > incoming[i] && published.slice(0, i).every((m, j) => m === incoming[j])), 'Marketplace cannot be newer than the source package');
 assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0, 'SDKs are not npm dependencies');
 assert.equal(pkg.exports['.'].default, './dist/index.js');
 if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(process.env.GITHUB_REF_NAME, `v${pkg.version}`);
-console.log(`Release metadata agrees: ${pkg.name}@${pkg.version}, plugin ${manifest.name}.`);
+console.log(`Release metadata agrees: ${pkg.name}@${pkg.version}, plugin ${manifest.name}; public catalog pins ${catalogVersion}.`);

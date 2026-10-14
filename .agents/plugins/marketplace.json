@@ -9,7 +9,7 @@
       "source": {
         "source": "npm",
         "package": "@dev-mainsequence/devtools",
-        "version": "0.2.2"
+        "version": "0.2.1"
       },
       "policy": {
         "installation": "AVAILABLE",
