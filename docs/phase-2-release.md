@@ -10,11 +10,11 @@ The same build produces `artifacts/codex/mainsequence-devtools/`, the standalone
 
 ## Verify and publish
 
-1. Assign a new release version consistently across the package, manifest and marketplace; published npm versions are immutable. Run `npm ci --ignore-scripts`, then `npm run release:check`.
+1. Assign a new release version consistently across the package and built plugin manifest; published npm versions are immutable. Keep the public marketplace on its last published version during preparation. Run `npm ci --ignore-scripts`, then `npm run release:check`.
 2. Verify VS Code against that packed npm archive, including its lockfile integrity and VSIX contents. Keep the exact archive used to generate the consumer lockfile.
 3. Authenticate with `npm login` or the configured trusted publisher, then publish the exact verified archive for the new version with `--ignore-scripts --access public`. Do not publish a development rebuild under an existing release version.
 4. Configure npm trusted publishing for `mainsequence-sdk/mainsequence-devtools`, workflow `release.yml`, GitHub environment `npm`, allowing direct `npm publish`. Subsequent version tags run checks, upload archives and publish that checked npm artifact through OIDC. A manual workflow run defaults to checks/artifacts only.
-5. Keep package, plugin manifest, marketplace entry and consumer dependency versions aligned. `scripts/check-release.cjs` checks producer metadata and release tags. The consumer lockfile identifies the exact npm archive, not an arbitrary local checkout.
+5. Verify the new version is available from the public registry and matches the checked artifact before advancing the public marketplace or consumer dependency pins. `scripts/check-release.cjs` checks producer metadata and release tags; it permits the public marketplace to remain on an older release. The consumer lockfile identifies the exact npm archive, not an arbitrary local checkout.
 
 The public npm registry serves 0.2.1, and VS Code 0.1.47 pins that registry archive with integrity `sha512-7cYZN5fUJi4347BO38LES6Uvi+p+szR+SqLiv9ngsnC91S/6vcoKIfRr38xCcSJ0LmG4vlx+namtLqmDSzxt7g==`. This release includes line-ending and readable-output fixes, dependency-only sync and removal of `freeze-env`. Local builds and installations do not update the published archive. Verify registry integrity before updating a consumer pin.
 
