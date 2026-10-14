@@ -9,7 +9,7 @@ export class McpTransport {
   async initialize(): Promise<void> {
     const result = await this.request('initialize', {
       protocolVersion: '2025-11-25', capabilities: {},
-      clientInfo: { name: 'mainsequence-devtools', version: '0.2.1' },
+      clientInfo: { name: 'mainsequence-devtools', version: '0.2.2' },
     });
     if (result?.protocolVersion !== '2025-11-25' || !result?.capabilities?.tools) {
       throw new ToolingError('UNSUPPORTED_ACTION', 'This endpoint does not support the platform MCP tools profile (2025-11-25).');

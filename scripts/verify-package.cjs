@@ -13,6 +13,9 @@ async function main() {
     if (unpack.status !== 0) throw new Error('Could not unpack the local npm artifact.');
     const manifest = JSON.parse(await fs.readFile(path.join(packageDir, '.codex-plugin/plugin.json'), 'utf8'));
     const pkg = JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8'));
+    for (const removed of ['claude', 'dist/claudeRunner.js', 'dist/hosts/claudeAccounts.js']) {
+      if (await fs.stat(path.join(packageDir, removed)).then(() => true).catch(() => false)) throw new Error('Shared package contains the removed Claude implementation: ' + removed);
+    }
     if (manifest.version !== pkg.version || manifest.hooks !== './hooks/hooks.json') throw new Error('The npm artifact must contain the versioned Codex compatibility manifest.');
     if (manifest.skills !== './skills/' || !await fs.stat(path.join(packageDir, 'skills/ms/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the native ms slash-menu registration.');
     if (!await fs.stat(path.join(packageDir, 'skills/mainsequence-mcp/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the conversational MCP skill.');
@@ -20,7 +23,9 @@ async function main() {
     if (await fs.stat(path.join(packageDir, 'plugin.json')).then(() => true).catch(() => false)) throw new Error('A root Agent Plugins manifest suppresses hooks in the tested Codex runtime.');
     await fs.writeFile(path.join(temporary, 'consumer.mjs'), `
 import assert from 'node:assert/strict';
-import { createDevTools, createNodeHost } from '@dev-mainsequence/devtools';
+import { createDevTools, createNodeHost, createProjectOperations, updateDevcontainerJsonc } from '@dev-mainsequence/devtools';
+assert.equal(typeof createProjectOperations, 'function');
+assert.match(updateDevcontainerJsonc('{}', 'example:latest'), /example:latest/);
 const tools = createDevTools({ host: createNodeHost(), env: {}, store: null });
 const result = await tools.dispatch({ action: 'auth-status', backend: 'https://fixture.example' });
 assert.equal(result.status, 'success');

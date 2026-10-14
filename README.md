@@ -125,3 +125,9 @@ See [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md), [Phase-1 ve
 `createSessionService` owns browser authorization, authenticated HTTP, refresh and revocation. `RepositoryClient` owns the canonical backend response and Git-resolution contracts. `createDevTools` owns project actions and cancellation. Hosts import only `@dev-mainsequence/devtools`; no private paths or sibling SDK source imports are used.
 
 `HostAuthSession` is an opt-in compatibility adapter for asynchronous host SecretStorage, machine-session adoption, and the existing host projection/migration policy. Its `get`, `save`, `environment` and `persistence` methods are privileged credential bridges for host internals: never put their values in webview state, progress, logs, hook output, or action results. Codex uses native persistence directly and does not enable this fallback.
+
+## Shared operations and integration ownership
+
+Version 0.2.2 adds the [public project operations API](docs/shared-project-operations.md).
+Claude Desktop is maintained in [its own repository](https://github.com/mainsequence-sdk/mainsequence-claude-desktop).
+See the [integration roadmap](docs/integration-roadmap.md) for ownership and deferred Codex/OpenCode extractions.

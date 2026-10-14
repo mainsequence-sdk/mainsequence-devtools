@@ -24,3 +24,7 @@ export { pythonExecutable, hasPythonProject, projectVersion, readPythonSdkStatus
 export type { CaptureProcess } from './shared/pythonProjectStatus';
 
 export type { McpRequest } from './shared/mcp';
+
+export { createProjectOperations, PROJECT_OPERATION_ACTIONS, validateDockerImage, validateDockerPlatform } from './shared/projectOperations';
+export type { ProjectOperationRequest, ProjectOperationOptions } from './shared/projectOperations';
+export { updateDevcontainerJsonc } from './shared/devcontainerJsonc';

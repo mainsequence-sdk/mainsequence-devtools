@@ -1,6 +1,6 @@
 {
   "name": "mainsequence-devtools",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Use MainSequence project MCPs from conversation and run explicit developer commands with the bundled runner.",
   "author": {
     "name": "MainSequence"
