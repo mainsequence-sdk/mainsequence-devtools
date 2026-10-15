@@ -13,7 +13,7 @@ export { clearSession, readSession, saveSession, SESSION_SERVICE, CredentialStor
 export type { MachineSession, ProgramRunner } from './shared/machineSession';
 export type { ProjectAction, SessionPersistence } from './shared/models';
 export { normalizeBackendUrl } from './shared/config';
-export { projectContext, detectProjectType, canonicalRepositoryDir, safeSlug } from './shared/repositories';
+export { readWorkspacePreferences, projectContext, detectProjectType, canonicalRepositoryDir, safeSlug } from './shared/repositories';
 export { RepositoryClient } from './shared/repositoryClient';
 export type { CodeRepository, CodeRepositoryBranch, CodeRepositoryGitContextResolution, GitHubRepositoryBinding } from './shared/repositoryModels';
 export { repositorySshKeyIdentity, repositorySshKeyName, repositorySshKeyPaths } from './shared/repositoryIdentity';

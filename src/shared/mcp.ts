@@ -6,16 +6,17 @@ import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport, sendProjectMcp } from './mcpTransport';
 
-export type McpRequest = { backend?: string } & (
+export type McpRequest = { backend?: string; environmentUid?: string } & (
   | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number }
   | { action: 'mcp-list' }
+  | { action: 'mcp-environments' }
   | { action: 'mcp-add' | 'mcp-remove' | 'mcp-tools'; releaseUid: string }
   | { action: 'mcp-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
 );
 type Connection = {
   backend: string; resource_release_uid: string; name: string;
   mcp_connection: { url: string; transport: 'streamable-http'; resource_metadata_url: string;
-    organization_environment_uid: string; active_revision_uid: string };
+    organization_environment_uid: string; organization_environment_name?: string; active_revision_uid: string };
 };
 
 function uuid(value: unknown): string {
@@ -47,7 +48,8 @@ function connection(backend: string, row: any): Connection {
     || metadataQuery.get('resource_release_uid') !== releaseUid) throw new ToolingError('API_ERROR', 'The MCP metadata targets another release.');
   return { backend: requireBackend(backend), resource_release_uid: releaseUid, name: row.name,
     mcp_connection: { url, transport: 'streamable-http', resource_metadata_url: metadataUrl,
-      organization_environment_uid: uuid(c.organization_environment_uid), active_revision_uid: uuid(c.active_revision_uid) } };
+      organization_environment_uid: uuid(c.organization_environment_uid),
+      ...(typeof c.organization_environment_name === 'string' && c.organization_environment_name.trim() ? { organization_environment_name: c.organization_environment_name.trim() } : {}), active_revision_uid: uuid(c.active_revision_uid) } };
 }
 function storagePath(env: NodeJS.ProcessEnv): string {
   const dir = process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'MainSequenceCLI')
@@ -132,8 +134,32 @@ export class McpConnections {
     try {
       const backend = requireBackend(inputBackend);
       this.options.signal?.throwIfAborted();
+      const environmentUid = request.environmentUid === undefined ? undefined : uuid(request.environmentUid);
+      const belongs = (value: Connection) => !environmentUid || value.mcp_connection.organization_environment_uid === environmentUid;
+      const requireEnvironment = (value: Connection) => {
+        if (!belongs(value)) throw new ToolingError('INVALID_REQUEST', 'This MCP belongs to a different organization environment. Select that environment first.');
+      };
       let data: unknown, summary: string;
-      if (request.action === 'mcp-discover') {
+      if (request.action === 'mcp-environments') {
+        const environments = new Map<string, { uid: string; name: string; isProduction: boolean }>();
+        for (let offset = 0; ; offset += 100) {
+          this.options.signal?.throwIfAborted();
+          if (offset >= 10000) throw new ToolingError('API_ERROR', 'The environment list is too large.');
+          const page = await this.session.request<any>(backend, 'GET', `/api/v1/organization-environments/?limit=100&offset=${offset}`);
+          const items = Array.isArray(page) ? page : page?.results;
+          if (!Array.isArray(items)) throw new ToolingError('API_ERROR', 'The backend returned an invalid environment list.');
+          for (const row of items) {
+            if (typeof row?.name !== 'string' || !row.name.trim()) throw new ToolingError('API_ERROR', 'An organization environment has no name.');
+            const uid = uuid(row.uid);
+            environments.set(uid, { uid, name: row.name.trim(), isProduction: row.is_production === true });
+          }
+          if (Array.isArray(page)) break;
+          if (!Number.isInteger(page.count) || page.count < 0) throw new ToolingError('API_ERROR', 'The environment pagination is invalid.');
+          if (offset + 100 >= page.count) break;
+          if (!items.length) throw new ToolingError('API_ERROR', 'The environment directory changed; refresh it.');
+        }
+        data = [...environments.values()]; summary = 'Organization environments available to your MainSequence account.';
+      } else if (request.action === 'mcp-discover') {
         if ((request.search !== undefined && typeof request.search !== 'string')
           || (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 100))
           || (request.offset !== undefined && (!Number.isInteger(request.offset) || request.offset < 0))) {
@@ -141,24 +167,43 @@ export class McpConnections {
         }
         const client = new McpTransport(message => this.session.request(backend, 'POST', '/mcp', message, true));
         await client.initialize();
-        const output = await client.request('tools/call', { name: 'resource_release.mcp_endpoints',
-          arguments: { ...(request.search !== undefined ? { search: request.search } : {}),
-            limit: request.limit ?? 100, offset: request.offset ?? 0 } });
-        if (output?.isError) throw new ToolingError('API_ERROR', 'Platform MCP could not list available project endpoints.');
-        const page = output?.structuredContent;
-        if (!Number.isInteger(page?.count) || page.count < 0 || !Array.isArray(page?.results)) throw new ToolingError('API_ERROR', 'Platform MCP returned an invalid directory.');
-        data = { count: page.count, results: page.results.map((row: unknown) => connection(backend, row)) };
+        const query = async (offset: number, limit: number) => {
+          const output = await client.request('tools/call', { name: 'resource_release.mcp_endpoints',
+            arguments: { ...(request.search !== undefined ? { search: request.search } : {}), limit, offset } });
+          if (output?.isError) throw new ToolingError('API_ERROR', 'Platform MCP could not list available project endpoints.');
+          const page = output?.structuredContent;
+          if (!Number.isInteger(page?.count) || page.count < 0 || !Array.isArray(page?.results)) throw new ToolingError('API_ERROR', 'Platform MCP returned an invalid directory.');
+          return { count: page.count, results: page.results.map((row: unknown) => connection(backend, row)) as Connection[] };
+        };
+        if (!environmentUid) data = await query(request.offset ?? 0, request.limit ?? 100);
+        else {
+          // The existing platform MCP has no environment filter. Scan its pages
+          // before paginating the matching releases; never show an incomplete page as complete.
+          const matching = new Map<string, Connection>();
+          for (let offset = 0; ; offset += 100) {
+            this.options.signal?.throwIfAborted();
+            if (offset >= 10000) throw new ToolingError('API_ERROR', 'MCP discovery is too large; narrow the search.');
+            const page = await query(offset, 100);
+            for (const value of page.results.filter(belongs)) matching.set(value.resource_release_uid, value);
+            if (offset + 100 >= page.count) break;
+          }
+          const values = [...matching.values()], offset = request.offset ?? 0;
+          data = { count: values.length, results: values.slice(offset, offset + (request.limit ?? 100)) };
+        }
         summary = 'Available project MCP endpoints; discovery does not save a connection.';
       } else if (request.action === 'mcp-list') {
-        data = (await this.read()).filter(row => row.backend === backend);
+        data = (await this.read()).filter(row => row.backend === backend && belongs(row));
         summary = 'Saved MCP connections for this backend. Availability is checked when used.';
       } else {
         const releaseUid = uuid(request.releaseUid);
         if (request.action === 'mcp-remove') {
+          const saved = (await this.read()).find(row => row.backend === backend && row.resource_release_uid === releaseUid);
+          if (saved) requireEnvironment(saved);
           await this.update(rows => rows.filter(row => !(row.backend === backend && row.resource_release_uid === releaseUid)));
           data = { resource_release_uid: releaseUid }; summary = 'The saved connection was removed.';
         } else {
           const value = await this.current(backend, releaseUid);
+          requireEnvironment(value);
           if (request.action !== 'mcp-add') {
             const saved = (await this.read()).find(row => row.backend === backend && row.resource_release_uid === releaseUid);
             if (!saved) throw new ToolingError('INVALID_REQUEST', 'Add this MCP connection before using it.');
