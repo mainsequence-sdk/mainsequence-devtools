@@ -30,14 +30,21 @@ export async function resolveBackend(explicit?: string, root?: string, env: Node
     const projectEnv = await readProjectEnv(root);
     if (projectEnv.MAINSEQUENCE_ENDPOINT) return requireBackend(projectEnv.MAINSEQUENCE_ENDPOINT);
   }
-  const configDir = process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'MainSequenceCLI')
-    : process.platform === 'win32' ? path.join(env.APPDATA || os.homedir(), 'MainSequenceCLI') : path.join(os.homedir(), '.config', 'mainsequence');
-  try {
-    const config = JSON.parse(await fs.readFile(path.join(configDir, 'config.json'), 'utf8'));
-    if (typeof config.backend_url === 'string') return requireBackend(config.backend_url);
-  } catch (error) { if (error instanceof ToolingError) throw error; }
-  return 'https://api.main-sequence.app';
+  return (await readWorkspacePreferences({ env })).backend;
 }
+
+/** Resolve non-secret workspace settings without requiring a session or writing configuration. */
+export async function readWorkspacePreferences(options: { env?: NodeJS.ProcessEnv; configPath?: string; homeDir?: string } = {}): Promise<{ backend: string; baseDir: string }> {
+  const env = options.env ?? process.env, home = options.homeDir ?? os.homedir();
+  const directory = process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'MainSequenceCLI')
+    : process.platform === 'win32' ? path.join(env.APPDATA || home, 'MainSequenceCLI') : path.join(home, '.config', 'mainsequence');
+  const config = await fs.readFile(options.configPath ?? path.join(directory, 'config.json'), 'utf8')
+    .then(text => JSON.parse(text)).catch(() => ({}));
+  const folder = config?.mainsequence_path;
+  return { backend: requireBackend(env.MAINSEQUENCE_ENDPOINT || (typeof config?.backend_url === 'string' && config.backend_url.trim()) || 'https://api.main-sequence.app'),
+    baseDir: typeof folder === 'string' && path.isAbsolute(folder) && !/[\0\r\n]/.test(folder) ? folder : path.join(home, 'mainsequence') };
+}
+
 export async function git(host: HostServices, cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
   const result = await host.runProcess({ executable: 'git', args, cwd, signal, timeoutMs: 15_000 });
   if (result.cancelled) throw new ToolingError('CANCELLED', 'The action was cancelled.');

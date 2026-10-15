@@ -73,7 +73,7 @@ const RETIRED_ACTIONS: Record<string, string> = {
   'freeze-env': 'freeze-env was removed: sync now refreshes the lock file, the environment and requirements.txt. Run sync instead.',
 };
 export function validateRequest(request: ActionRequest): void {
-  if (request && ['mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(request.action)) {
+  if (request && ['mcp-environments', 'mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(request.action)) {
     if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
     return;
   }

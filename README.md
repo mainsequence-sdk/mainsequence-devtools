@@ -131,3 +131,6 @@ See [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md), [Phase-1 ve
 Version 0.2.2 adds the [public project operations API](docs/shared-project-operations.md).
 Claude Desktop is maintained in [its own repository](https://github.com/mainsequence-sdk/mainsequence-claude-desktop).
 See the [integration roadmap](docs/integration-roadmap.md) for ownership and deferred Codex/OpenCode extractions.
+
+Workspace defaults and environment-scoped MCP host APIs are documented in
+[workspace settings and environments](docs/workspace-environments.md).
