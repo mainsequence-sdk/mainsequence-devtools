@@ -122,13 +122,13 @@ export class MachineSessionService implements SessionService {
     if (!session) throw new ToolingError('NOT_AUTHENTICATED', 'No session is saved for this backend. Run login.');
     return { session, source: 'machine' };
   }
-  private async http<T>(backend: string, method: string, apiPath: string, body?: unknown, access?: string): Promise<T> {
+  private async http<T>(backend: string, method: string, apiPath: string, body?: unknown, access?: string, timeoutMs?: number): Promise<T> {
     this.options.signal?.throwIfAborted();
     if ((apiPath !== '/mcp' && !/^\/(api|auth)\//.test(apiPath)) || apiPath.includes('..')) throw new ToolingError('INVALID_REQUEST', 'Only existing /api/, /auth/, or central /mcp endpoints can be requested.');
     const controller = new AbortController();
     const abort = () => controller.abort();
     this.options.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, this.options.requestTimeoutMs ?? 30_000);
+    const timer = setTimeout(abort, this.options.requestTimeoutMs ?? timeoutMs ?? 30_000);
     try {
       const response = await (this.options.fetch ?? fetch)(backend + apiPath, {
         method, redirect: 'error', signal: controller.signal,
@@ -205,21 +205,22 @@ export class MachineSessionService implements SessionService {
       ...(expiresAt ? { expiresAt } : {}), ...(check ? { checked: true } : {})
     };
   }
-  async request<T>(input: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe = method === 'GET'): Promise<T> {
+  async request<T>(input: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe = method === 'GET', options?: { timeoutMs?: number }): Promise<T> {
+    if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 120000)) throw new ToolingError('INVALID_REQUEST', 'Request timeout must be between 1 and 120000 milliseconds.');
     const backend = requireBackend(input);
     let { session, source } = await this.selected(backend);
     if (!session.access || (expiry(session.access) && Date.parse(expiry(session.access)!) <= Date.now() + 30_000)) {
       if (source === 'machine') session = await this.renew(backend);
       else if (!session.access) throw new ToolingError('NOT_AUTHENTICATED', 'The explicit environment has no access token.');
     }
-    try { return await this.http<T>(backend, method, apiPath, body, session.access); }
+    try { return await this.http<T>(backend, method, apiPath, body, session.access, options?.timeoutMs); }
     catch (error) {
       if (!(error instanceof ToolingError) || error.code !== 'AUTH_REJECTED') throw error;
       if (source === 'environment') throw refusedCredentials('environment', backend, session.access);
       if (!retrySafe) throw error;
       const latest = await this.saved(backend);
       const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend);
-      try { return await this.http<T>(backend, method, apiPath, body, retry.access); }
+      try { return await this.http<T>(backend, method, apiPath, body, retry.access, options?.timeoutMs); }
       catch (retryError) {
         if (retryError instanceof ToolingError && retryError.code === 'AUTH_REJECTED') throw refusedCredentials('machine', backend, retry.refresh || retry.access);
         throw retryError;

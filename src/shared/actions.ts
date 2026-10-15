@@ -1,4 +1,5 @@
 import { McpConnections, McpRequest } from './mcp';
+import { AgentClient, AgentRequest, isAgentAction } from './agents';
 import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
 import { MachineSessionService } from './session';
 import { listRepositories, projectContext, resolveBackend, resolveRepository } from './repositories';
@@ -14,6 +15,10 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
     try {
       validateRequest(request);
       options.signal?.throwIfAborted();
+      if (isAgentAction(action)) {
+        const backend = await resolveBackend(request.backend, undefined, env);
+        return safeResult(await new AgentClient(session, { signal: options.signal }).dispatch(request as AgentRequest, backend));
+      }
       if (action.startsWith('mcp-')) {
         const backend = await resolveBackend(request.backend, process.cwd(), env);
         return safeResult(await new McpConnections(session, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs }).dispatch(request as McpRequest, backend));
@@ -73,6 +78,10 @@ const RETIRED_ACTIONS: Record<string, string> = {
   'freeze-env': 'freeze-env was removed: sync now refreshes the lock file, the environment and requirements.txt. Run sync instead.',
 };
 export function validateRequest(request: ActionRequest): void {
+  if (request && isAgentAction(request.action)) {
+    if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
+    return;
+  }
   if (request && ['mcp-environments', 'mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(request.action)) {
     if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
     return;

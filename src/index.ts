@@ -24,6 +24,8 @@ export { pythonExecutable, hasPythonProject, projectVersion, readPythonSdkStatus
 export type { CaptureProcess } from './shared/pythonProjectStatus';
 
 export type { McpRequest } from './shared/mcp';
+export { AgentClient } from './shared/agents';
+export type { AgentRequest, PlatformAgent } from './shared/agents';
 
 export { createProjectOperations, PROJECT_OPERATION_ACTIONS, validateDockerImage, validateDockerPlatform } from './shared/projectOperations';
 export type { ProjectOperationRequest, ProjectOperationOptions } from './shared/projectOperations';

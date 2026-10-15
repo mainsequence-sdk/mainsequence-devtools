@@ -134,3 +134,7 @@ See the [integration roadmap](docs/integration-roadmap.md) for ownership and def
 
 Workspace defaults and environment-scoped MCP host APIs are documented in
 [workspace settings and environments](docs/workspace-environments.md).
+
+Version 0.2.4 adds the reusable [agent directory and conversation API](docs/agent-conversations.md),
+using existing platform MCP contracts and the selected organization environment.
+Claude's pane and prompt integration remain in its own repository.

@@ -1,4 +1,5 @@
 import type { McpRequest } from './mcp';
+import type { AgentRequest } from './agents';
 export type ProjectType = 'python' | 'vite_react';
 export type ProjectAction = 'sync' | 'sdk-status' | 'update-sdk' | 'update-agents' | 'install-skills' | 'skills-sync' | 'install' | 'env-cleanup' | 'open-folder' | 'signed-terminal';
 /**
@@ -7,7 +8,7 @@ export type ProjectAction = 'sync' | 'sdk-status' | 'update-sdk' | 'update-agent
  */
 export type RetiredProjectAction = 'freeze-env';
 type BackendSelection = { backend?: string };
-export type ActionRequest = McpRequest
+export type ActionRequest = McpRequest | AgentRequest
   | (BackendSelection & { action: 'login' | 'logout' | 'refresh-token' })
   | (BackendSelection & { action: 'auth-status'; check?: boolean })
   | (BackendSelection & { action: 'repositories' })
@@ -72,7 +73,7 @@ export interface SessionService {
   login(backend: string): Promise<SessionStatus>;
   refresh(backend: string): Promise<SessionStatus>;
   logout(backend: string): Promise<{ revoked: boolean }>;
-  request<T>(backend: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe?: boolean): Promise<T>;
+  request<T>(backend: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe?: boolean, options?: { timeoutMs?: number }): Promise<T>;
 }
 
 /** Trusted host persistence only. Credentials never cross the action-result boundary. */
