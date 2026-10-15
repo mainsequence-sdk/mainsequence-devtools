@@ -56,7 +56,10 @@ session continuation, response modes, polling, cancellation and uncertain-send
 behavior using a synthetic MCP transport. These are contract tests, not evidence of
 live agent availability. Existing authentication and project tests remain in the suite.
 
-Version 0.2.4 is a release candidate in this implementation branch. Publish and verify
-the exact npm archive before releasing a dependent Claude plugin or advancing any
-public marketplace. See [release procedure](phase-2-release.md). Do not modify existing
-VS Code/Codex dependency pins as part of this feature.
+Version 0.2.4 was published on 2026-10-15 from commit `57bb311` through the existing
+[trusted-publisher workflow](https://github.com/mainsequence-sdk/mainsequence-devtools/actions/runs/38732377231).
+The public registry archive is verified with integrity
+`sha512-RgU8NALWU6XjCMC297pVcfjyM5xEQlZjnxdTKXkgBSWF1MX8HHreGMxA7xbdxs+SjWJczJ3bhBYmxsqJGxLQkQ==`.
+Claude's consumer lockfile pins that archive. Publication does not update the Claude
+marketplace or existing VS Code/Codex pins. See the [release procedure](phase-2-release.md);
+do not republish a rebuilt archive under an existing npm version.
