@@ -206,7 +206,7 @@ export class MachineSessionService implements SessionService {
     };
   }
   async request<T>(input: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe = method === 'GET', options?: { timeoutMs?: number }): Promise<T> {
-    if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 120000)) throw new ToolingError('INVALID_REQUEST', 'Request timeout must be between 1 and 120000 milliseconds.');
+    if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 300000)) throw new ToolingError('INVALID_REQUEST', 'Request timeout must be between 1 and 300000 milliseconds.');
     const backend = requireBackend(input);
     let { session, source } = await this.selected(backend);
     if (!session.access || (expiry(session.access) && Date.parse(expiry(session.access)!) <= Date.now() + 30_000)) {

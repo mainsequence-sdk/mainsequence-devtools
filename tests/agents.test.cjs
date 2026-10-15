@@ -8,7 +8,7 @@ const row = () => ({ uid: agentUid, name: 'Analyst', description: 'Analyze risk'
   a2a_profile: {supported_response_kinds:['message','task']}, agent_card: {url:'https://never-contact.example/',skills:[{name:'Risk',description:'Explain exposure',examples:['Explain risk']} ]},
   configuration: {secret:'not-public'}, runtime_config: {token:'not-public'} });
 function fixture() {
- const calls = [], state = {account:'person@example.test',row:row(),catalog:['agent.list','agent.search','agent.get','a2a.send_message','a2a.get_task','a2a.wait_task','a2a.cancel_task']};
+ const calls = [], state = {account:'person@example.test',row:row(),catalog:['agent.list','agent.search','agent.get','agent.get_or_create_session','a2a.send_message','a2a.get_task','a2a.wait_task','a2a.cancel_task']};
  const task = () => ({agent_uid:agentUid,agent_session_uid:sessionUid,task_uid:taskUid,status:'working',terminal:false,event_cursor:2,outputs:[],cancellation_requested:false});
  const session = {status:async (url,check)=>{assert.equal(url,backend);assert.equal(check,true);return {authenticated:true,username:state.account}},sanitize:s=>s.replaceAll('known-secret','[redacted]'),
  request:async(url,method,path,body,retrySafe,options)=>{
@@ -16,11 +16,12 @@ function fixture() {
   const reply = result=>({jsonrpc:'2.0',id:body.id,result});
   if(body.method==='initialize')return reply({protocolVersion:'2025-11-25',capabilities:{tools:{}}});
   if(body.method==='notifications/initialized')return;
-  if(body.method==='tools/list')return reply({tools:state.catalog.map(name=>({name,inputSchema:{type:'object'}}))});
+  if(body.method==='tools/list')return reply({tools:state.catalog.map(name=>({name,inputSchema:{type:'object'},...(state.timeoutMeta===undefined?{}:{_meta:{'mainsequence.ai/timeout-seconds/v1':state.timeoutMeta}})}))});
   const {name,arguments:args}=body.params;let data;
   if(name==='agent.list')data={count:35,results:[state.row]};
   if(name==='agent.search')data={results:[state.row]};
   if(name==='agent.get')data=state.row;
+  if(name==='agent.get_or_create_session')data={uid:args.session_uid||sessionUid,agent_uid:agentUid,organization_environment_uid:environmentUid,bound_handle:{handle_unique_id:args.handle_unique_id},runtime_token:'not-public',...(state.sessionOverride||{})};
   if(name==='a2a.get_task')data={...task(),...(state.taskOverride||{})};
   if(name==='a2a.wait_task')data={...task(),events:[],timed_out:true};
   if(name==='a2a.cancel_task')data={...task(),cancellation_requested:true};
@@ -50,7 +51,7 @@ test('send allocates a stable handle; follow-up reuses its session with no repla
  const f=fixture();const first=await f.send();assert.equal(first.status,'success');assert.equal(first.data.sessionUid,sessionUid);assert.match(first.data.message,/\[redacted\]/);
  await f.send({handleId:undefined,sessionUid});const sends=f.calls.filter(c=>c.body.params?.name==='a2a.send_message');assert.equal(sends.length,2);
  assert.equal(sends[0].body.params.arguments.handle_unique_id,'claude_conversation_1');assert.equal(sends[1].body.params.arguments.agent_session_uid,sessionUid);
- assert.ok(sends.every(c=>c.retrySafe===false&&c.options.timeoutMs===75000));assert.ok(sends.every(c=>!Object.hasOwn(c.body.params.arguments,'completion_policy')));
+ assert.ok(sends.every(c=>c.retrySafe===false&&c.options.timeoutMs===145000));assert.ok(sends.every(c=>!Object.hasOwn(c.body.params.arguments,'completion_policy')));
  assert.notEqual(sends[0].body.params.arguments.message_id,sends[1].body.params.arguments.message_id);
 });
 test('changed account, missing account binding, malformed selections and undeployed agents never send',async()=>{
@@ -84,4 +85,32 @@ test('an ambiguous send or mismatched response is reported without repeating the
 });
 test('an older platform without messaging reports unsupported capability before sending',async()=>{
  const f=fixture();f.state.catalog=f.state.catalog.filter(n=>n!=='a2a.send_message');const result=await f.send();assert.equal(result.error.code,'UNSUPPORTED_ACTION');assert.equal(result.effects,undefined);
+});
+
+test('session resolution creates or resumes without messaging, exposes only public identity, and is safely repeatable',async()=>{
+ const f=fixture(), selection={agentUid,expectedAccount:'person@example.test',handleId:'claude_host_agent_default'};
+ const first=await f.dispatch('agent-session',selection);assert.equal(first.status,'success');assert.equal(first.data.sessionUid,sessionUid);
+ await f.dispatch('agent-session',selection);
+ await f.dispatch('agent-session',{agentUid,expectedAccount:'person@example.test',sessionUid});
+ const calls=f.calls.filter(c=>c.body.params?.name==='agent.get_or_create_session');assert.equal(calls.length,3);
+ assert.deepEqual(calls[0].body.params.arguments,{agent_uid:agentUid,handle_unique_id:selection.handleId});
+ assert.deepEqual(calls[2].body.params.arguments,{agent_uid:agentUid,session_uid:sessionUid});assert.ok(calls.every(c=>c.retrySafe));
+ assert.equal(f.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
+ assert.doesNotMatch(JSON.stringify(first),/runtime_token|not-public|parent_session/);
+});
+test('session resolution rejects mismatched identities and missing account or ambiguous selectors',async()=>{
+ for(const extra of [{},{expectedAccount:'person@example.test',handleId:'bad/handle'},{expectedAccount:'person@example.test',handleId:'ok',sessionUid}]){
+  const f=fixture();assert.equal((await f.dispatch('agent-session',{agentUid,...extra})).status,'failure');
+  assert.equal(f.calls.some(c=>c.body.params?.name==='agent.get_or_create_session'),false);
+ }
+ for(const override of [{uid:'invalid'},{agent_uid:id(99)},{organization_environment_uid:id(99)},{bound_handle:{handle_unique_id:'wrong'}}]){
+  const f=fixture();f.state.sessionOverride=override;
+  assert.equal((await f.dispatch('agent-session',{agentUid,expectedAccount:'person@example.test',handleId:'ok'})).status,'failure');
+ }
+});
+test('advertised tool deadlines are bounded and invalid values cannot shorten agent sends',async()=>{
+ for(const [value,expected] of [[140,145000],[200,205000],[295,300000],[-1,145000],[999999,145000],['140',145000],[0,145000]]){
+  const f=fixture();f.state.timeoutMeta=value;assert.equal((await f.send()).status,'success');
+  assert.equal(f.calls.find(c=>c.body.params?.name==='a2a.send_message').options.timeoutMs,expected);
+ }
 });

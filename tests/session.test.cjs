@@ -155,3 +155,16 @@ test('a refused renewal names the saved session, its expiry and the sign-in, and
   assert.match(result.error.message, /^The backend refused the saved session for http:\/\/127\.0\.0\.1:\d+: it expired on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\. Sign in again\.$/);
   assert.equal(readSession(store, backend).refresh, expiredRefresh);
 });
+
+
+test('per-request timeout accommodates the advertised agent deadline and rejects values beyond the cap before HTTP', async t => {
+  const { backend, calls } = await fixtureBackend(t);
+  const store = memoryStore(); saveSession(store, backend, {username:'fixture',access:'fixture-access-1',refresh:'fixture-refresh-1'});
+  const service = new MachineSessionService(createNodeHost(), {env:{},store});
+  await service.request(backend, 'GET', '/api/v1/code-repositories/', undefined, true, {timeoutMs:145000});
+  const count = calls.length;
+  for (const timeoutMs of [0,-1,NaN,Infinity,300001]) {
+    await assert.rejects(service.request(backend, 'GET', '/api/v1/code-repositories/', undefined, true, {timeoutMs}), error => error.code === 'INVALID_REQUEST');
+  }
+  assert.equal(calls.length, count);
+});

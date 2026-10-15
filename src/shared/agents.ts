@@ -7,6 +7,7 @@ type AgentSelection = { backend?: string; environmentUid: string; expectedAccoun
 export type AgentRequest = AgentSelection & (
   | { action: 'agents-list'; search?: string; limit?: number; offset?: number }
   | { action: 'agent-get'; agentUid: string }
+  | { action: 'agent-session'; agentUid: string; handleId?: string; sessionUid?: string }
   | { action: 'agent-send'; agentUid: string; message: string; responseKind: 'message' | 'task';
       handleId?: string; sessionUid?: string; taskUid?: string }
   | { action: 'agent-task-get' | 'agent-task-wait' | 'agent-task-cancel'; agentUid: string; taskUid: string; afterSequence?: number }
@@ -17,7 +18,7 @@ export type PlatformAgent = {
   skills: { name: string; description: string; examples: string[] }[];
 };
 export function isAgentAction(action: string): boolean {
-  return ['agents-list', 'agent-get', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(action);
+  return ['agents-list', 'agent-get', 'agent-session', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(action);
 }
 function uuid(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value)) {
@@ -50,14 +51,24 @@ export class AgentClient {
       const identity = await this.session.status(backend, true);
       if (!identity.authenticated || !identity.username) throw new ToolingError('NOT_AUTHENTICATED', 'Sign in to MainSequence to use agents.');
       if (input.expectedAccount !== undefined && input.expectedAccount !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed. Refresh agents and start a new conversation.');
-      if (['agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
+      if (['agent-session', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
         throw new ToolingError('INVALID_REQUEST', 'Agent conversations must be bound to the account returned by discovery.');
       }
+      const timeouts = new Map<string, number>();
       const client = new McpTransport(message => this.session.request(backend, 'POST', '/mcp', message,
         message.method !== 'tools/call' || !['a2a.send_message', 'a2a.cancel_task'].includes((message.params as any)?.name),
-        (message.params as any)?.name === 'a2a.send_message' ? { timeoutMs: 75000 } : undefined));
+        message.method === 'tools/call' && timeouts.has((message.params as any)?.name) ? { timeoutMs: timeouts.get((message.params as any).name) } : undefined));
       await client.initialize();
-      const catalog = new Set((await client.tools()).map(tool => tool.name));
+      const tools = await client.tools();
+      const catalog = new Set(tools.map(tool => tool.name));
+      for (const tool of tools) {
+        const seconds = tool._meta?.['mainsequence.ai/timeout-seconds/v1'];
+        if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 && seconds <= 295) {
+          timeouts.set(tool.name, Math.ceil(seconds * 1000) + 5000);
+        }
+      }
+      // Older catalogs omit deadlines. Cover the existing 140-second gateway budget.
+      if (!timeouts.has('a2a.send_message')) timeouts.set('a2a.send_message', 145000);
       const call = async (name: string, args: Record<string, unknown>, mutation = false): Promise<any> => {
         if (!catalog.has(name)) throw new ToolingError('UNSUPPORTED_ACTION', `The connected platform does not offer ${name}.`);
         this.options.signal?.throwIfAborted();
@@ -90,6 +101,27 @@ export class AgentClient {
           return result;
         };
         if (input.action === 'agent-get') data = { account: identity.username, agent: selected };
+        else if (input.action === 'agent-session') {
+          if ([input.handleId, input.sessionUid].filter(value => value !== undefined).length !== 1) {
+            throw new ToolingError('INVALID_REQUEST', 'Use exactly one conversation handle or session.');
+          }
+          let target: Record<string, unknown>;
+          if (input.sessionUid !== undefined) target = { session_uid: uuid(input.sessionUid) };
+          else {
+            if (typeof input.handleId !== 'string' || !/^[-a-zA-Z0-9_]{1,255}$/.test(input.handleId)) {
+              throw new ToolingError('INVALID_REQUEST', 'A stable conversation handle is required.');
+            }
+            target = { handle_unique_id: input.handleId };
+          }
+          const resolved = await call('agent.get_or_create_session', { agent_uid: agentUid, ...target });
+          if (uuid(resolved.agent_uid) !== agentUid || uuid(resolved.organization_environment_uid) !== environmentUid
+            || (input.sessionUid !== undefined && uuid(resolved.uid) !== uuid(input.sessionUid))
+            || (input.handleId && resolved.bound_handle?.handle_unique_id !== input.handleId)) {
+            throw new ToolingError('API_ERROR', 'The platform returned another agent conversation.');
+          }
+          data = { account: identity.username, agent: selected, sessionUid: uuid(resolved.uid),
+            ...(resolved.bound_handle?.handle_unique_id ? { handleId: text(resolved.bound_handle.handle_unique_id, 255) } : {}) };
+        }
         else if (input.action === 'agent-send') {
           if (typeof input.message !== 'string' || !input.message.trim() || input.message.length > 64000) throw new ToolingError('INVALID_REQUEST', 'Enter a message of 1–64000 characters.');
           if (!['message', 'task'].includes(input.responseKind) || !selected.responseKinds.includes(input.responseKind)) throw new ToolingError('UNSUPPORTED_ACTION', 'The agent does not advertise the requested response mode.');
