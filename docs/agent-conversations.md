@@ -1,6 +1,6 @@
 # Shared platform agent conversations
 
-The additive 0.2.5 API discovers agents and exchanges messages through the existing
+The additive 0.2.6 API discovers agents and exchanges messages through the existing
 MainSequence `/mcp` gateway. No backend routes, schemas, account handling, or provider
 configuration change. Claude UI, native draft/command handling and conversation controls
 belong to `mainsequence-claude-desktop`; this package contains only the reusable
@@ -17,6 +17,7 @@ identity returned by discovery as `expectedAccount`.
 | `agents-list` | `agent.list`, or semantic `agent.search` | Optional search, limit and offset |
 | `agent-get` | `agent.get` | agentUid; optional expectedAccount |
 | `agent-session` | `agent.get_or_create_session` | agentUid, expectedAccount; exactly one of handleId or sessionUid |
+| `agent-readiness` | `agent.get_or_create_session`, `agent_session.resolve_runtime_access` | agentUid, sessionUid, expectedAccount; optional timeoutMs (1–630000) |
 | `agent-send` | `a2a.send_message` | agentUid, expectedAccount, message, responseKind; exactly one of handleId, sessionUid, taskUid |
 | `agent-task-get` | `a2a.get_task` | agentUid, expectedAccount, taskUid |
 | `agent-task-wait` | `a2a.get_task`, `a2a.wait_task` | Same; optional afterSequence |
@@ -39,6 +40,24 @@ session UID for resolution. The result exposes only account, public agent, sessi
 UID and handle. Agent, environment and returned identity are checked. Missing
 provider/model defaults are reported without changing them. Client chat IDs are
 external handles, not MainSequence parent-session foreign keys.
+
+`agent-readiness` validates the saved session and waits for
+`runtime_interaction.can_submit`, independently of deployment status or `is_ready`.
+Transient states follow the backend retry interval (100 ms minimum) within one
+630-second cap, shortened by an earlier backend wake deadline plus 30 seconds.
+Cancellation interrupts the wait; terminal or malformed decisions fail closed.
+Progress goes through the host's progress callback as fixed credential-free text.
+The public result is only `{account, agentUid, sessionUid, ready: true}`. The raw
+runtime access response (token, URL, diagnostics and other fields) is never exposed
+or persisted. This can wake the deployed agent but sends no message or inference.
+Readiness is not cached across operations or restored as permanent state.
+
+Set `waitForReady: true` on `agent-send` to use the same readiness gate immediately
+before dispatch, including task continuation. A readiness failure has no uncertain
+message effect; a failure after dispatch retains the existing uncertain-send marker.
+This option defaults off for compatibility with existing adapters, whose gateway
+sender continues to own readiness. Claude 0.4.5 opts in. No UI package, Python SDK
+or direct runtime HTTP transport is added.
 
 A send may use that resolved `sessionUid`, or a stable handle for legacy clients.
 The returned `sessionUid` identifies follow-ups. Message mode is synchronous. Task mode always requests `completion_policy:
@@ -79,3 +98,8 @@ platform tool deadlines. Claude 0.4.4 consumes this additive API. Release throug
 the existing trusted-publisher workflow, verify the public archive integrity, and
 then pin that archive in the consumer. Existing Codex marketplace and VS Code pins
 are unchanged by this shared-library release.
+
+Version 0.2.6 adds readiness preparation and opt-in send-time revalidation for Claude
+0.4.5. Existing session allocation and other adapter behavior remain unchanged.
+
+Agent list, search and detail results include `defaults: { provider, model, thinking }`, projected only from existing `llm_provider`, `llm_model` and `llm_thinking` fields. Empty or absent fields remain empty strings. These are Agent defaults for new sessions, not a claim about a resumed session’s resolved configuration. Runtime configuration and credential fields are excluded.

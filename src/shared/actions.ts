@@ -17,7 +17,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
       options.signal?.throwIfAborted();
       if (isAgentAction(action)) {
         const backend = await resolveBackend(request.backend, undefined, env);
-        return safeResult(await new AgentClient(session, { signal: options.signal }).dispatch(request as AgentRequest, backend));
+        return safeResult(await new AgentClient(session, { signal: options.signal, progress: host.progress?.bind(host) }).dispatch(request as AgentRequest, backend));
       }
       if (action.startsWith('mcp-')) {
         const backend = await resolveBackend(request.backend, process.cwd(), env);
