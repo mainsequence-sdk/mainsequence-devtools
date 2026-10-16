@@ -2,23 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport } from './mcpTransport';
+import { waitForAgentReadiness } from './agentReadiness';
 
 type AgentSelection = { backend?: string; environmentUid: string; expectedAccount?: string };
 export type AgentRequest = AgentSelection & (
   | { action: 'agents-list'; search?: string; limit?: number; offset?: number }
   | { action: 'agent-get'; agentUid: string }
   | { action: 'agent-session'; agentUid: string; handleId?: string; sessionUid?: string }
+  | { action: 'agent-readiness'; agentUid: string; sessionUid: string; timeoutMs?: number }
   | { action: 'agent-send'; agentUid: string; message: string; responseKind: 'message' | 'task';
-      handleId?: string; sessionUid?: string; taskUid?: string }
+      handleId?: string; sessionUid?: string; taskUid?: string; waitForReady?: boolean }
   | { action: 'agent-task-get' | 'agent-task-wait' | 'agent-task-cancel'; agentUid: string; taskUid: string; afterSequence?: number }
 );
 export type PlatformAgent = {
   uid: string; name: string; description: string; environmentUid: string; environmentName: string;
   repositoryBranch: string; runtimeReleaseUid: string | null; runtimeState: string; responseKinds: string[];
+  defaults: { provider: string; model: string; thinking: string };
   skills: { name: string; description: string; examples: string[] }[];
 };
 export function isAgentAction(action: string): boolean {
-  return ['agents-list', 'agent-get', 'agent-session', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(action);
+  return ['agents-list', 'agent-get', 'agent-session', 'agent-readiness', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(action);
 }
 function uuid(value: unknown): string {
   if (typeof value !== 'string' || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value)) {
@@ -34,16 +37,18 @@ function agent(row: any, environmentUid: string): PlatformAgent {
     environmentName: text(row.organization_environment_name, 300), repositoryBranch: text(row.repository_branch, 300),
     runtimeReleaseUid: row.runtime_release_uid ? uuid(row.runtime_release_uid) : null,
     runtimeState: text(row.runtime_update?.state, 50) || 'unknown',
+    defaults: { provider: text(row.llm_provider, 64).trim(), model: text(row.llm_model, 128).trim(), thinking: text(row.llm_thinking, 1000).trim() },
     responseKinds: Array.isArray(row.a2a_profile?.supported_response_kinds) ? row.a2a_profile.supported_response_kinds.filter((value: unknown) => value === 'message' || value === 'task') : [],
     skills: (Array.isArray(row.agent_card?.skills) ? row.agent_card.skills : []).slice(0, 50).map((skill: any) => ({ name: text(skill.name, 300), description: text(skill.description), examples: (Array.isArray(skill.examples) ? skill.examples : []).slice(0, 10).map((value: unknown) => text(value, 2000)) })) };
 }
 
 /** Host-independent platform Agent client. Never connects to a card's URL or exposes runtime credentials. */
 export class AgentClient {
-  constructor(private readonly session: SessionService, private readonly options: { signal?: AbortSignal } = {}) {}
+  constructor(private readonly session: SessionService, private readonly options: { signal?: AbortSignal; progress?: (message: string) => void } = {}) {}
 
   async dispatch(input: AgentRequest, selectedBackend: string): Promise<ActionResult> {
     let sent = false;
+    let readinessDeadline: number | undefined;
     try {
       const backend = requireBackend(selectedBackend), environmentUid = uuid(input.environmentUid);
       this.options.signal?.throwIfAborted();
@@ -51,13 +56,18 @@ export class AgentClient {
       const identity = await this.session.status(backend, true);
       if (!identity.authenticated || !identity.username) throw new ToolingError('NOT_AUTHENTICATED', 'Sign in to MainSequence to use agents.');
       if (input.expectedAccount !== undefined && input.expectedAccount !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed. Refresh agents and start a new conversation.');
-      if (['agent-session', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
+      if (['agent-session', 'agent-readiness', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
         throw new ToolingError('INVALID_REQUEST', 'Agent conversations must be bound to the account returned by discovery.');
       }
       const timeouts = new Map<string, number>();
-      const client = new McpTransport(message => this.session.request(backend, 'POST', '/mcp', message,
+      const client = new McpTransport(message => {
+        const remaining = readinessDeadline === undefined ? undefined : Math.ceil(readinessDeadline - performance.now());
+        if (remaining !== undefined && remaining <= 0) throw new ToolingError('PROCESS_TIMEOUT', 'The agent did not become ready in time. No message was sent. Try again.');
+        return this.session.request(backend, 'POST', '/mcp', message,
         message.method !== 'tools/call' || !['a2a.send_message', 'a2a.cancel_task'].includes((message.params as any)?.name),
-        message.method === 'tools/call' && timeouts.has((message.params as any)?.name) ? { timeoutMs: timeouts.get((message.params as any).name) } : undefined));
+        remaining !== undefined ? { timeoutMs: Math.min(30000, remaining) }
+          : message.method === 'tools/call' && timeouts.has((message.params as any)?.name) ? { timeoutMs: timeouts.get((message.params as any).name) } : undefined);
+      });
       await client.initialize();
       const tools = await client.tools();
       const catalog = new Set(tools.map(tool => tool.name));
@@ -100,7 +110,33 @@ export class AgentClient {
           if (uuid(result.agent_uid) !== agentUid || uuid(result.task_uid) !== uuid(taskUid)) throw new ToolingError('INVALID_REQUEST', 'This task belongs to another agent.');
           return result;
         };
+        const resolveSession = async (target: Record<string, unknown>) => {
+          const resolved = await call('agent.get_or_create_session', { agent_uid: agentUid, ...target });
+          if (uuid(resolved.agent_uid) !== agentUid || uuid(resolved.organization_environment_uid) !== environmentUid
+            || (target.session_uid && uuid(resolved.uid) !== uuid(target.session_uid))
+            || (target.handle_unique_id && resolved.bound_handle?.handle_unique_id !== target.handle_unique_id)) {
+            throw new ToolingError('API_ERROR', 'The platform returned another agent conversation.');
+          }
+          return resolved;
+        };
+        const ready = async (sessionUid: string, timeoutMs?: number) => {
+          if (!selected.runtimeReleaseUid || selected.runtimeState === 'not_deployed') throw new ToolingError('UNSUPPORTED_ACTION', 'This agent has no deployed runtime.');
+          try {
+            await waitForAgentReadiness({ signal: this.options.signal, progress: this.options.progress, timeoutMs,
+              resolve: async deadline => {
+                readinessDeadline = deadline;
+                const account = await this.session.status(backend, true);
+                if (!account.authenticated || account.username !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed while checking the agent. Choose the agent again.');
+                return call('agent_session.resolve_runtime_access', { agent_session_uid: sessionUid });
+              } });
+          } finally { readinessDeadline = undefined; }
+        };
         if (input.action === 'agent-get') data = { account: identity.username, agent: selected };
+        else if (input.action === 'agent-readiness') {
+          const resolved = await resolveSession({ session_uid: uuid(input.sessionUid) });
+          await ready(uuid(resolved.uid), input.timeoutMs);
+          data = { account: identity.username, agentUid, sessionUid: uuid(resolved.uid), ready: true };
+        }
         else if (input.action === 'agent-session') {
           if ([input.handleId, input.sessionUid].filter(value => value !== undefined).length !== 1) {
             throw new ToolingError('INVALID_REQUEST', 'Use exactly one conversation handle or session.');
@@ -113,12 +149,7 @@ export class AgentClient {
             }
             target = { handle_unique_id: input.handleId };
           }
-          const resolved = await call('agent.get_or_create_session', { agent_uid: agentUid, ...target });
-          if (uuid(resolved.agent_uid) !== agentUid || uuid(resolved.organization_environment_uid) !== environmentUid
-            || (input.sessionUid !== undefined && uuid(resolved.uid) !== uuid(input.sessionUid))
-            || (input.handleId && resolved.bound_handle?.handle_unique_id !== input.handleId)) {
-            throw new ToolingError('API_ERROR', 'The platform returned another agent conversation.');
-          }
+          const resolved = await resolveSession(target);
           data = { account: identity.username, agent: selected, sessionUid: uuid(resolved.uid),
             ...(resolved.bound_handle?.handle_unique_id ? { handleId: text(resolved.bound_handle.handle_unique_id, 255) } : {}) };
         }
@@ -135,6 +166,13 @@ export class AgentClient {
           else {
             if (typeof input.handleId !== 'string' || !/^[-a-zA-Z0-9_]{1,255}$/.test(input.handleId)) throw new ToolingError('INVALID_REQUEST', 'A stable conversation handle is required.');
             target = { agent_uid: agentUid, handle_unique_id: input.handleId };
+          }
+          if (input.waitForReady !== undefined && typeof input.waitForReady !== 'boolean') throw new ToolingError('INVALID_REQUEST', 'waitForReady must be a boolean.');
+          if (input.waitForReady) {
+            const resolved = await resolveSession(input.taskUid
+              ? { session_uid: uuid((await task(input.taskUid)).agent_session_uid) }
+              : input.sessionUid ? { session_uid: uuid(input.sessionUid) } : { handle_unique_id: input.handleId });
+            await ready(uuid(resolved.uid));
           }
           const reply = await call('a2a.send_message', { ...target, message: input.message, message_id: randomUUID(), response_kind: input.responseKind,
             ...(input.responseKind === 'task' ? { completion_policy: 'poll' } : {}) }, true);

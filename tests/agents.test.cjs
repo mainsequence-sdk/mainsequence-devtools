@@ -6,9 +6,9 @@ const backend = 'https://platform.example', environmentUid = id(1), agentUid = i
 const row = () => ({ uid: agentUid, name: 'Analyst', description: 'Analyze risk', organization_environment_uid: environmentUid,
   organization_environment_name: 'Research', repository_branch: 'develop', runtime_release_uid: id(5), runtime_update: {state:'current'},
   a2a_profile: {supported_response_kinds:['message','task']}, agent_card: {url:'https://never-contact.example/',skills:[{name:'Risk',description:'Explain exposure',examples:['Explain risk']} ]},
-  configuration: {secret:'not-public'}, runtime_config: {token:'not-public'} });
-function fixture() {
- const calls = [], state = {account:'person@example.test',row:row(),catalog:['agent.list','agent.search','agent.get','agent.get_or_create_session','a2a.send_message','a2a.get_task','a2a.wait_task','a2a.cancel_task']};
+  llm_provider:'anthropic', llm_model:'claude-sonnet-test', llm_thinking:'high', configuration: {secret:'not-public'}, runtime_config: {token:'not-public'} });
+function fixture(options = {}) {
+ const calls = [], state = {account:'person@example.test',row:row(),catalog:['agent.list','agent.search','agent.get','agent.get_or_create_session','agent_session.resolve_runtime_access','a2a.send_message','a2a.get_task','a2a.wait_task','a2a.cancel_task']};
  const task = () => ({agent_uid:agentUid,agent_session_uid:sessionUid,task_uid:taskUid,status:'working',terminal:false,event_cursor:2,outputs:[],cancellation_requested:false});
  const session = {status:async (url,check)=>{assert.equal(url,backend);assert.equal(check,true);return {authenticated:true,username:state.account}},sanitize:s=>s.replaceAll('known-secret','[redacted]'),
  request:async(url,method,path,body,retrySafe,options)=>{
@@ -22,6 +22,10 @@ function fixture() {
   if(name==='agent.search')data={results:[state.row]};
   if(name==='agent.get')data=state.row;
   if(name==='agent.get_or_create_session')data={uid:args.session_uid||sessionUid,agent_uid:agentUid,organization_environment_uid:environmentUid,bound_handle:{handle_unique_id:args.handle_unique_id},runtime_token:'not-public',...(state.sessionOverride||{})};
+  if(name==='agent_session.resolve_runtime_access') {
+   data=state.accessQueue?.length ? state.accessQueue.shift() : {mode:'token',token:'private-runtime-token',rpc_url:'https://private-runtime.invalid',runtime_interaction:{state:'ready',can_submit:true}};
+   state.afterAccess?.();
+  }
   if(name==='a2a.get_task')data={...task(),...(state.taskOverride||{})};
   if(name==='a2a.wait_task')data={...task(),events:[],timed_out:true};
   if(name==='a2a.cancel_task')data={...task(),cancellation_requested:true};
@@ -32,7 +36,7 @@ function fixture() {
   }
   return reply({structuredContent:data,isError:false});
  }};
- const api=createDevTools({host:createNodeHost(),session,env:{}});
+ const api=createDevTools({host:createNodeHost(options.progress),session,env:{},signal:options.signal});
  return {calls,state,send:extra=>api.dispatch({action:'agent-send',backend,environmentUid,agentUid,expectedAccount:'person@example.test',message:'What do you do?',responseKind:'message',handleId:'claude_conversation_1',...extra}),
  dispatch:(action,extra={})=>api.dispatch({action,backend,environmentUid,...extra})};
 }
@@ -113,4 +117,69 @@ test('advertised tool deadlines are bounded and invalid values cannot shorten ag
   const f=fixture();f.state.timeoutMeta=value;assert.equal((await f.send()).status,'success');
   assert.equal(f.calls.find(c=>c.body.params?.name==='a2a.send_message').options.timeoutMs,expected);
  }
+});
+
+const readinessSelection={agentUid,sessionUid,expectedAccount:'person@example.test'};
+const waking=(retry=1)=>({is_ready:true,mode:'unavailable',token:null,runtime_interaction:{state:'waking',can_submit:false,retry_after_ms:retry},runtime_presence:{detail:'private-runtime-token https://private-runtime.invalid'}});
+test('readiness waits for admission, ignoring routability, and exposes no access credentials or URL',async()=>{
+ const progress=[],f=fixture({progress:s=>progress.push(s)});f.state.accessQueue=[waking()];
+ const result=await f.dispatch('agent-readiness',readinessSelection);
+ assert.equal(result.status,'success');assert.deepEqual(result.data,{account:'person@example.test',agentUid,sessionUid,ready:true});
+ assert.deepEqual(progress,['Checking agent…','Starting agent…','Agent ready']);
+ assert.equal(f.calls.filter(c=>c.body.params?.name==='agent_session.resolve_runtime_access').length,2);
+ assert.equal(f.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
+ assert.doesNotMatch(JSON.stringify([result,progress]),/private-runtime|rpc_url|token/);
+});
+test('readiness fails closed for missing, inconsistent and terminal decisions without sending',async()=>{
+ for(const access of [{is_ready:true}, {runtime_interaction:{state:'ready',can_submit:'true'}},
+ {runtime_interaction:{state:'ready',can_submit:true},mode:'unavailable'},waking(NaN),
+ {runtime_interaction:{state:'unavailable',can_submit:false,retry_after_ms:1},detail:'private-runtime-token'}]) {
+  const f=fixture();f.state.accessQueue=[access];const result=await f.dispatch('agent-readiness',readinessSelection);
+  assert.equal(result.status,'failure');assert.equal(result.effects,undefined);assert.doesNotMatch(JSON.stringify(result),/private-runtime/);
+  assert.equal(f.calls.filter(c=>c.body.params?.name==='agent_session.resolve_runtime_access').length,1);
+ }
+});
+test('readiness respects its wait budget and never polls earlier than a long server retry',async()=>{
+ const f=fixture();f.state.accessQueue=[waking(60000)];
+ const result=await f.dispatch('agent-readiness',{...readinessSelection,timeoutMs:10});
+ assert.equal(result.error.code,'PROCESS_TIMEOUT');assert.equal(result.effects,undefined);
+ assert.equal(f.calls.filter(c=>c.body.params?.name==='agent_session.resolve_runtime_access').length,1);
+ for(const timeoutMs of [0,-1,Infinity,630001,'5']) assert.equal((await f.dispatch('agent-readiness',{...readinessSelection,timeoutMs})).error.code,'INVALID_REQUEST');
+});
+test('cancellation ends an in-progress wake without polling or sending',async()=>{
+ const controller=new AbortController(),f=fixture({signal:controller.signal,progress:s=>{if(s==='Starting agent…')controller.abort();}});
+ f.state.accessQueue=[waking(60000)];const result=await f.dispatch('agent-readiness',readinessSelection);
+ assert.equal(result.status,'cancelled');assert.equal(result.effects,undefined);
+ assert.equal(f.calls.filter(c=>c.body.params?.name==='agent_session.resolve_runtime_access').length,1);
+});
+test('resumed sessions revalidate identity and account changes stop a readiness wait',async()=>{
+ const f=fixture();await f.dispatch('agent-readiness',readinessSelection);await f.dispatch('agent-readiness',readinessSelection);
+ assert.equal(f.calls.filter(c=>c.body.params?.name==='agent_session.resolve_runtime_access').length,2);
+ f.state.accessQueue=[waking()];f.state.afterAccess=()=>{f.state.account='changed'};
+ assert.equal((await f.dispatch('agent-readiness',readinessSelection)).error.code,'AUTH_REJECTED');
+ const mismatch=fixture();mismatch.state.sessionOverride={agent_uid:id(99)};
+ assert.equal((await mismatch.dispatch('agent-readiness',readinessSelection)).status,'failure');
+ assert.equal(mismatch.calls.some(c=>c.body.params?.name==='agent_session.resolve_runtime_access'),false);
+});
+test('opt-in send readiness stops known-unsent failures and dispatches exactly once when ready',async()=>{
+ const f=fixture();f.state.accessQueue=[waking()];assert.equal((await f.send({waitForReady:true})).status,'success');
+ const names=f.calls.map(c=>c.body.params?.name);assert.equal(names.filter(n=>n==='a2a.send_message').length,1);
+ assert.ok(names.lastIndexOf('agent_session.resolve_runtime_access')<names.indexOf('a2a.send_message'));
+ const blocked=fixture();blocked.state.accessQueue=[{runtime_interaction:{state:'unavailable',can_submit:false}}];
+ const result=await blocked.send({waitForReady:true});assert.equal(result.status,'failure');assert.equal(result.effects,undefined);
+ assert.equal(blocked.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
+ const uncertain=fixture();uncertain.state.failSend=true;assert.equal((await uncertain.send({waitForReady:true})).effects.state,'partial-or-uncertain');
+ assert.equal(uncertain.calls.filter(c=>c.body.params?.name==='a2a.send_message').length,1);
+});
+
+test('agent defaults are a read-only allowlisted projection across list, search and detail',async()=>{
+ const f=fixture();
+ for(const [action,extra] of [['agents-list',{}],['agents-list',{search:'risk'}],['agent-get',{agentUid}]]) {
+  const result=await f.dispatch(action,extra),agent=result.data.agent||result.data.results[0];
+  assert.deepEqual(agent.defaults,{provider:'anthropic',model:'claude-sonnet-test',thinking:'high'});
+  assert.doesNotMatch(JSON.stringify(result),/not-public/);
+ }
+ f.state.row.llm_provider='';delete f.state.row.llm_model;f.state.row.llm_thinking={token:'not-public'};
+ assert.deepEqual((await f.dispatch('agents-list')).data.results[0].defaults,{provider:'',model:'',thinking:''});
+ assert.equal(f.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
 });
