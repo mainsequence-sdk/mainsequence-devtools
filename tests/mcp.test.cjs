@@ -83,7 +83,11 @@ async function fixture(t) {
     if (state.denied) return res.writeHead(403).end();
     if (req.url === '/api/v1/resource-releases/' + uid + '/' || req.url === '/api/v1/resource-releases/' + secondUid + '/') {
       const value = row(req.url.includes(secondUid) ? secondUid : uid);
+      // Release detail has capability metadata, but no discovery-only display name.
+      delete value.name;
+      value.mcp_enabled = !state.noMcp;
       if (state.noMcp) value.mcp_connection = null;
+      Object.assign(value, state.detail);
       res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(value));
     }
     if (req.url.endsWith('/exchange-launch/')) {
@@ -122,6 +126,65 @@ test('conversation workflow discovers, saves, immediately calls and remembers MC
   assert.equal((await f.dispatch('mcp-remove')).status, 'success');
   assert.equal((await f.dispatch('mcp-list')).data.length, 1);
   assert.equal((await f.dispatch('mcp-call', { tool: 'set_value', arguments: {} })).status, 'failure');
+});
+
+test('release detail and saved connections work without a display name or another discovery request', async t => {
+  const f = await fixture(t);
+  const detail = await fetch(f.backend + '/api/v1/resource-releases/' + f.uid + '/', {
+    headers: { Authorization: 'Bearer private-platform-token' },
+  }).then(response => response.json());
+  assert.equal(Object.hasOwn(detail, 'name'), false, 'detail matches the backend contract');
+  assert.equal(detail.mcp_enabled, true);
+  const added = await f.dispatch('mcp-add');
+  assert.equal(added.status, 'success');
+  assert.equal(added.data.connection.resource_release_uid, f.uid);
+  assert.equal(Object.hasOwn(added.data.connection, 'name'), false);
+  assert.equal(Object.hasOwn(JSON.parse(await fs.readFile(f.file, 'utf8'))[0], 'name'), false);
+
+  // Existing named records and records with no usable label remain readable.
+  for (const name of [undefined, 'legacy display label', '', null, 17]) {
+    const saved = { ...added.data.connection, name };
+    await fs.writeFile(f.file, JSON.stringify([saved]));
+    const listed = await f.dispatch('mcp-list', {}, f.create());
+    assert.equal(listed.status, 'success');
+    assert.equal(listed.data[0].name, name === 'legacy display label' ? name : undefined);
+    assert.equal((await f.dispatch('mcp-tools', {}, f.create())).status, 'success');
+    const called = await f.dispatch('mcp-call', { tool: 'set_value', arguments: { value: 12 } }, f.create());
+    assert.equal(called.status, 'success');
+    assert.equal(called.data.structuredContent.value, 12);
+  }
+  assert.equal(f.calls.some(call => call.server === 'platform' && call.path === '/mcp'), false,
+    'UID-based operations do not fetch discovery to fill display metadata');
+});
+
+test('nameless release details still validate identity and all required MCP metadata before exchanging credentials', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.dispatch('mcp-add')).status, 'success');
+  const connection = f.row().mcp_connection;
+  const invalidDetails = [
+    { uid: f.secondUid, mcp_connection: f.row(f.secondUid).mcp_connection },
+    { mcp_connection: null },
+    ...[
+      { transport: 'sse' },
+      { url: f.project + '/other' },
+      { resource_metadata_url: f.row(f.secondUid).mcp_connection.resource_metadata_url },
+      { organization_environment_uid: 'invalid' },
+      { active_revision_uid: 'invalid' },
+    ].map(fields => ({ mcp_connection: { ...connection, ...fields } })),
+  ];
+  const saved = await fs.readFile(f.file, 'utf8');
+  const exchanged = f.state.exchanged, projectCalls = f.calls.filter(call => call.server === 'project').length;
+  for (const detail of invalidDetails) {
+    f.state.detail = detail;
+    for (const action of ['mcp-add', 'mcp-tools', 'mcp-call']) {
+      const result = await f.dispatch(action, { tool: 'set_value', arguments: { value: 1 } });
+      assert.equal(result.status, 'failure', JSON.stringify({ action, detail }));
+    }
+  }
+  assert.equal(f.state.exchanged, exchanged);
+  assert.equal(f.calls.filter(call => call.server === 'project').length, projectCalls);
+  assert.equal(f.state.invoked, 0);
+  assert.equal(await fs.readFile(f.file, 'utf8'), saved);
 });
 
 test('revocation, removed capabilities, changed URLs, and a wrong credential target stop before project execution', async t => {
