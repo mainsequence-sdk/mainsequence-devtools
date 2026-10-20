@@ -1,5 +1,6 @@
 import type { McpRequest } from './mcp';
 import type { AgentRequest } from './agents';
+import type { OrganizationProjectRequest } from './organizationProjects';
 export type ProjectType = 'python' | 'vite_react';
 export type ProjectAction = 'sync' | 'sdk-status' | 'update-sdk' | 'update-agents' | 'install-skills' | 'skills-sync' | 'install' | 'env-cleanup' | 'open-folder' | 'signed-terminal';
 /**
@@ -8,7 +9,7 @@ export type ProjectAction = 'sync' | 'sdk-status' | 'update-sdk' | 'update-agent
  */
 export type RetiredProjectAction = 'freeze-env';
 type BackendSelection = { backend?: string };
-export type ActionRequest = McpRequest | AgentRequest
+export type ActionRequest = McpRequest | AgentRequest | OrganizationProjectRequest
   | (BackendSelection & { action: 'login' | 'logout' | 'refresh-token' })
   | (BackendSelection & { action: 'auth-status'; check?: boolean })
   | (BackendSelection & { action: 'repositories' })
