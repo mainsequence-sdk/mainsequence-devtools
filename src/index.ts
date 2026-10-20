@@ -30,3 +30,7 @@ export type { AgentRequest, PlatformAgent } from './shared/agents';
 export { createProjectOperations, PROJECT_OPERATION_ACTIONS, validateDockerImage, validateDockerPlatform } from './shared/projectOperations';
 export type { ProjectOperationRequest, ProjectOperationOptions } from './shared/projectOperations';
 export { updateDevcontainerJsonc } from './shared/devcontainerJsonc';
+export { OrganizationProjectClient } from './shared/organizationProjects';
+export type { OrganizationProject, OrganizationProjectBranch, OrganizationProjectPage, OrganizationEnvironment, OrganizationProjectRequest } from './shared/organizationProjects';
+export type { OrganizationProjectWorkspace } from './shared/organizationProjectWorkspace';
+export { readOrganizationProjectWorkspace } from './shared/organizationProjectWorkspace';

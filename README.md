@@ -4,6 +4,8 @@ One TypeScript package owns the shared action models, browser authentication, ma
 
 ## Build and run
 
+VS Code and Claude use the shared [MainSequence Projects API and local workspace setup](docs/organization-projects.md). Projects are environment-scoped collections of repository branches; the existing repository operations API retains its compatible names and storage layout.
+
 Requires Node 22 or newer. Install build dependencies and build once:
 
 ```sh

@@ -205,13 +205,15 @@ function quoteSshPath(value: string): string {
   }
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
-export async function setupRepository(host: HostServices, session: SessionService, input: { backend: string; repositoryUid: string; branch: string; baseDir: string; install?: boolean }, options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState }): Promise<unknown> {
+export async function setupRepository(host: HostServices, session: SessionService, input: { backend: string; repositoryUid: string; branch: string; baseDir: string; install?: boolean }, options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState; destination?: string; reference?: string }): Promise<unknown> {
   const { repository, binding, orgSlug } = await repositorySetupInfo(session, input.backend, input.repositoryUid, input.branch);
   const type = repository.code_repository_type;
   if (type !== 'python' && type !== 'vite_react') throw new ToolingError('UNSUPPORTED_ACTION', 'This CodeRepository type is not supported.');
   const cloneUrl = binding.git_ssh_url;
   if (!cloneUrl || !repositorySshKeyIdentity(cloneUrl).usesSsh) throw new ToolingError('INVALID_REQUEST', 'Repository setup requires the existing SSH GitHub binding.');
-  const destination = canonicalRepositoryDir(input.baseDir, orgSlug, repository.uid, repository.code_repository_name);
+  const destination = options.destination ? path.resolve(options.destination) : canonicalRepositoryDir(input.baseDir, orgSlug, repository.uid, repository.code_repository_name);
+  const relative = path.relative(path.resolve(input.baseDir), destination);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new ToolingError('INVALID_REQUEST', 'The checkout must be inside its selected base folder.');
   const env = projectEnvironment({ backend: input.backend }, options.env);
   // No replacement of existing folders. A failed clone is retained for inspection.
   if (await fs.lstat(destination).then(() => true).catch((error: any) => { if (error.code === 'ENOENT') return false; throw error; })) {
@@ -222,7 +224,9 @@ export async function setupRepository(host: HostServices, session: SessionServic
   await fs.mkdir(path.resolve(input.baseDir), { recursive: true });
   const baseReal = await fs.realpath(path.resolve(input.baseDir));
   // Reject existing symlink components before creating folders or other setup effects.
-  for (const segment of [path.join(path.resolve(input.baseDir), orgSlug), path.dirname(destination)]) {
+  const parents: string[] = [];
+  for (let current = path.dirname(destination); current !== path.resolve(input.baseDir); current = path.dirname(current)) parents.unshift(current);
+  for (const segment of parents) {
     const stat = await fs.lstat(segment).catch((error: any) => { if (error.code === 'ENOENT') return null; throw error; });
     if (stat?.isSymbolicLink() || (stat && !stat.isDirectory())) throw new ToolingError('INVALID_REQUEST', 'The canonical checkout parent must contain ordinary directories, not symlinks.');
   }
@@ -250,7 +254,7 @@ export async function setupRepository(host: HostServices, session: SessionServic
       await execute(host, { executable: 'git', args: ['ls-remote', '--exit-code', cloneUrl, 'HEAD'], cwd: path.resolve(input.baseDir), env, signal: options.signal, timeoutMs: 15_000 }, options.state, false);
     }
     host.progress?.('Cloning the registered repository branch into its canonical folder.');
-    await execute(host, { executable: 'git', args: ['clone', '--branch', input.branch, '--single-branch', '--', cloneUrl, destination], cwd: baseReal, env, signal: options.signal }, options.state, true);
+    await execute(host, { executable: 'git', args: ['clone', ...(options.reference ? ['--reference-if-able', options.reference, '--dissociate'] : []), '--branch', input.branch, '--single-branch', '--', cloneUrl, destination], cwd: baseReal, env, signal: options.signal }, options.state, true);
     const context = await projectContext(host, destination, input.backend, type, env, options.signal);
     if (context.repositoryIdentity !== repositorySshKeyIdentity(cloneUrl).identity || context.branch !== input.branch) throw new ToolingError('INVALID_GIT_CONTEXT', 'The cloned identity or branch does not match the selected repository.');
     await withProjectLock(context.gitCommonDir, async () => {

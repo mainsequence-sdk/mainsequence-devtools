@@ -4,6 +4,8 @@ import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionServic
 import { MachineSessionService } from './session';
 import { listRepositories, projectContext, resolveBackend, resolveRepository } from './repositories';
 import { DRY_RUN_ACTIONS, projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
+import { OrganizationProjectClient, OrganizationProjectRequest } from './organizationProjects';
+import { setupOrganizationProject } from './organizationProjectWorkspace';
 
 export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string }) {
   const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, ...sessionOptions } = options;
@@ -15,6 +17,22 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
     try {
       validateRequest(request);
       options.signal?.throwIfAborted();
+      if (action.startsWith('organization-')) {
+        const input = request as OrganizationProjectRequest;
+        const backend = await resolveBackend(request.backend, undefined, env);
+        const client = new OrganizationProjectClient(session, backend, options.signal);
+        let data: unknown;
+        if (input.action === 'organization-environments') data = await client.environments();
+        else if (input.action === 'organization-projects') data = await client.list(input.environmentUid, input);
+        else if (input.action === 'organization-project') data = await client.getProject(input.environmentUid, input.projectUid);
+        else if (input.action === 'organization-project-link') {
+          const url = await client.link(input);
+          if (!await host.openBrowser(url)) throw new ToolingError('BROWSER_FAILED', 'The resource link could not open.');
+          data = { url };
+        } else if (input.action === 'organization-project-setup') data = await setupOrganizationProject({ ...input, backend }, { host, session, env, signal: options.signal, state });
+        else throw new ToolingError('INVALID_REQUEST', 'Unknown organization project action.');
+        return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Claude must attach them when its workspace session starts.' : 'Projects loaded.', data });
+      }
       if (isAgentAction(action)) {
         const backend = await resolveBackend(request.backend, undefined, env);
         return safeResult(await new AgentClient(session, { signal: options.signal, progress: host.progress?.bind(host) }).dispatch(request as AgentRequest, backend));
@@ -78,6 +96,10 @@ const RETIRED_ACTIONS: Record<string, string> = {
   'freeze-env': 'freeze-env was removed: sync now refreshes the lock file, the environment and requirements.txt. Run sync instead.',
 };
 export function validateRequest(request: ActionRequest): void {
+  if (request && ['organization-environments', 'organization-projects', 'organization-project', 'organization-project-link', 'organization-project-setup'].includes(request.action)) {
+    if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
+    return;
+  }
   if (request && isAgentAction(request.action)) {
     if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
     return;
