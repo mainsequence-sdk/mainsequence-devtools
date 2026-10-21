@@ -5,11 +5,11 @@
   },
   "plugins": [
     {
-      "name": "mainsequence-devtools",
+      "name": "mainsequence",
       "source": {
         "source": "npm",
-        "package": "@dev-mainsequence/devtools",
-        "version": "0.2.8"
+        "package": "@dev-mainsequence/codex-plugin",
+        "version": "0.3.0"
       },
       "policy": {
         "installation": "AVAILABLE",
