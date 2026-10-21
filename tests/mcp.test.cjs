@@ -13,9 +13,11 @@ const { saveSession, readSession } = require('../dist/shared/machineSession.js')
 async function fixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ms-mcp-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const calls = [], state = { denied: false, mode: 'json', token: 'private-release-credential', exchanged: 0, invoked: 0 };
+  const calls = [], state = { denied: false, mode: 'json', token: 'private-release-credential', exchanged: 0, invoked: 0,
+    labels: true, labelsDenied: false, branchDenied: false, branchMismatch: false };
   const uid = 'b0a5ee29-f649-46ab-a040-38504838a131';
   const secondUid = 'b0a5ee29-f649-46ab-a040-38504838a132';
+  const branchUid = 'c1d2e3f4-0000-4000-8000-000000000001';
   const tool = { name: 'set_value', description: 'Write a fixture value', inputSchema: { type: 'object', properties: { value: { type: 'number' } }, required: ['value'] },
     annotations: { readOnlyHint: false, destructiveHint: true } };
   const listen = async handler => {
@@ -77,10 +79,23 @@ async function fixture(t) {
       if (message.method === 'notifications/initialized') return res.writeHead(202).end();
       assert.equal(message.params.name, 'resource_release.mcp_endpoints');
       return reply(res, message.id, { content: [], structuredContent: { count: 2, results: [uid, secondUid].map(id => {
-        const value = row(id); value.resource_release_uid = value.uid; delete value.uid; return value;
+        const value = row(id); value.resource_release_uid = value.uid; delete value.uid; value.code_repository_branch_uid = branchUid; return value;
       }) } });
     }
     if (state.denied) return res.writeHead(403).end();
+    if (req.url.startsWith('/api/v1/resource-releases/?')) {
+      // The directory projection names a release and its repository branch; the detail below does not.
+      if (!state.labels) return res.writeHead(404).end('{}');
+      if (state.labelsDenied) return res.writeHead(403).end();
+      const search = new URL(req.url, backend).searchParams.get('search') || '';
+      const results = [uid, secondUid].filter(id => id.includes(search)).map(id => ({ uid: id, name: 'metatable-mcp', release_kind: 'fastapi', code_repository_branch_uid: branchUid }));
+      res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ count: results.length, results }));
+    }
+    if (req.url === '/api/v1/code-repository-branches/' + branchUid + '/') {
+      if (state.branchDenied) return res.writeHead(403).end();
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ uid: state.branchMismatch ? secondUid : branchUid, code_repository_uid: 'repo-1', code_repository_name: 'MetaTablesApi', repository_branch: 'main', is_initialized: true }));
+    }
     if (req.url === '/api/v1/resource-releases/' + uid + '/' || req.url === '/api/v1/resource-releases/' + secondUid + '/') {
       const value = row(req.url.includes(secondUid) ? secondUid : uid);
       // Release detail has capability metadata, but no discovery-only display name.
@@ -100,7 +115,7 @@ async function fixture(t) {
   const create = extra => createDevTools({ host: createNodeHost(), env: { MAINSEQUENCE_ENDPOINT: backend, MAINSEQUENCE_ACCESS_TOKEN: 'private-platform-token' },
     mcpConnectionsPath: file, requestTimeoutMs: 500, ...extra });
   const dispatch = (action, extra = {}, instance = create()) => instance.dispatch({ action, backend, releaseUid: uid, ...extra });
-  return { dir, file, uid, secondUid, backend, row, project, calls, state, create, dispatch };
+  return { dir, file, uid, secondUid, branchUid, backend, row, project, calls, state, create, dispatch };
 }
 
 test('conversation workflow discovers, saves, immediately calls and remembers MCP connections across client instances', async t => {
@@ -130,6 +145,7 @@ test('conversation workflow discovers, saves, immediately calls and remembers MC
 
 test('release detail and saved connections work without a display name or another discovery request', async t => {
   const f = await fixture(t);
+  f.state.labels = false;
   const detail = await fetch(f.backend + '/api/v1/resource-releases/' + f.uid + '/', {
     headers: { Authorization: 'Bearer private-platform-token' },
   }).then(response => response.json());
@@ -155,6 +171,69 @@ test('release detail and saved connections work without a display name or anothe
   }
   assert.equal(f.calls.some(call => call.server === 'platform' && call.path === '/mcp'), false,
     'UID-based operations do not fetch discovery to fill display metadata');
+});
+
+test('connecting stores the release and repository names; listing reads them locally and completes older records once', async t => {
+  const f = await fixture(t);
+  const platform = () => f.calls.filter(call => call.server === 'platform').length;
+  const stored = () => fs.readFile(f.file, 'utf8').then(JSON.parse);
+  const added = await f.dispatch('mcp-add');
+  assert.equal(added.status, 'success');
+  assert.deepEqual([added.data.connection.name, added.data.connection.display_name, added.data.connection.code_repository_branch_uid],
+    ['metatable-mcp', 'MetaTablesApi', f.branchUid]);
+  assert.deepEqual(Object.keys((await stored())[0]), ['backend', 'resource_release_uid', 'name', 'display_name', 'code_repository_branch_uid', 'mcp_connection']);
+  let before = platform();
+  const listed = await f.dispatch('mcp-list', {}, f.create());
+  assert.equal(listed.data[0].display_name, 'MetaTablesApi');
+  assert.equal(platform(), before, 'a labelled record lists without any backend request');
+  assert.equal((await f.dispatch('mcp-tools', {}, f.create())).data.connection.display_name, 'MetaTablesApi', 'tool listings carry the saved labels');
+
+  // A record saved by an earlier version has no labels: the first listing that can read them stores them.
+  const legacy = { backend: f.backend, resource_release_uid: f.uid, mcp_connection: added.data.connection.mcp_connection };
+  await fs.writeFile(f.file, JSON.stringify([legacy]));
+  f.state.branchDenied = true;
+  let result = await f.dispatch('mcp-list', {}, f.create());
+  assert.equal(result.status, 'success');
+  assert.equal(result.data[0].name, 'metatable-mcp'); assert.equal(result.data[0].display_name, undefined);
+  assert.equal((await stored())[0].name, 'metatable-mcp', 'the part that could be read is stored');
+  f.state.branchDenied = false;
+  result = await f.dispatch('mcp-list', {}, f.create());
+  assert.equal(result.data[0].display_name, 'MetaTablesApi');
+  assert.equal((await stored())[0].display_name, 'MetaTablesApi');
+  before = platform();
+  await f.dispatch('mcp-list', {}, f.create());
+  assert.equal(platform(), before, 'a completed record is not looked up again');
+
+  // An unreadable directory, a mismatched branch and malformed stored labels leave the record usable.
+  const cases = [[() => { f.state.labelsDenied = true; }, {}], [() => { f.state.labels = false; }, {}],
+    [() => { f.state.branchMismatch = true; }, { name: 'metatable-mcp', code_repository_branch_uid: f.branchUid }]];
+  for (const [setup, expected] of cases) {
+    await fs.writeFile(f.file, JSON.stringify([{ ...legacy, display_name: 17, code_repository_branch_uid: 'not-a-uuid' }]));
+    Object.assign(f.state, { labelsDenied: false, labels: true, branchMismatch: false }); setup();
+    result = await f.dispatch('mcp-list', {}, f.create());
+    assert.equal(result.status, 'success');
+    assert.deepEqual([result.data[0].name, result.data[0].display_name, result.data[0].code_repository_branch_uid],
+      [expected.name, undefined, expected.code_repository_branch_uid]);
+    assert.equal((await f.dispatch('mcp-call', { tool: 'set_value', arguments: { value: 5 } }, f.create())).data.structuredContent.value, 5);
+  }
+  Object.assign(f.state, { labelsDenied: false, labels: true, branchMismatch: false });
+
+  // A held lock defers storing the labels; the listing still shows them.
+  await fs.writeFile(f.file, JSON.stringify([legacy]));
+  await fs.writeFile(f.file + '.lock', 'fixture-owner');
+  result = await f.dispatch('mcp-list', {}, f.create());
+  assert.equal(result.status, 'success'); assert.equal(result.data[0].display_name, 'MetaTablesApi');
+  assert.equal(Object.hasOwn((await stored())[0], 'display_name'), false);
+  await fs.unlink(f.file + '.lock');
+  await f.dispatch('mcp-list', {}, f.create());
+  assert.equal((await stored())[0].display_name, 'MetaTablesApi');
+
+  // Discovery rows carry the release name and branch without a repository lookup.
+  before = f.calls.length;
+  const discovered = await f.dispatch('mcp-discover');
+  assert.deepEqual(discovered.data.results.map(row => [row.name, row.code_repository_branch_uid]), [['metatable-mcp', f.branchUid], ['metatable-mcp', f.branchUid]]);
+  assert.equal(f.calls.slice(before).filter(call => call.server === 'platform' && call.path !== '/mcp').length, 0);
+  assert.doesNotMatch(JSON.stringify([added, listed, result, discovered, await stored()]), /private-platform-token|private-release-credential/);
 });
 
 test('nameless release details still validate identity and all required MCP metadata before exchanging credentials', async t => {

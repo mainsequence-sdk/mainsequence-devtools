@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport, sendProjectMcp } from './mcpTransport';
+import { codeRepositoryBranchFromResponse } from './repositoryModels';
 
 export type McpRequest = { backend?: string; environmentUid?: string } & (
   | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number }
@@ -13,17 +14,28 @@ export type McpRequest = { backend?: string; environmentUid?: string } & (
   | { action: 'mcp-add' | 'mcp-remove' | 'mcp-tools'; releaseUid: string }
   | { action: 'mcp-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
 );
+/** `name` is the release's own name, `display_name` its repository's name; both are
+ * resolved when a connection is added and stored with it, so listing needs no lookup. */
 type Connection = {
-  backend: string; resource_release_uid: string; name?: string;
+  backend: string; resource_release_uid: string; name?: string; display_name?: string; code_repository_branch_uid?: string;
   mcp_connection: { url: string; transport: 'streamable-http'; resource_metadata_url: string;
     organization_environment_uid: string; organization_environment_name?: string; active_revision_uid: string };
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function uuid(value: unknown): string {
-  if (typeof value !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+  if (typeof value !== 'string' || !UUID.test(value)) {
     throw new ToolingError('INVALID_REQUEST', 'Select an exact resource release UUID from MCP discovery or saved connections.');
   }
   return value.toLowerCase();
+}
+type Labels = Pick<Connection, 'name' | 'display_name' | 'code_repository_branch_uid'>;
+/** Optional labels: an absent or malformed value is dropped, never an error. */
+function labels(row: any): Labels {
+  const text = (value: unknown) => typeof value === 'string' && value.trim() && !/[\r\n\0]/.test(value) ? value.trim() : undefined;
+  const name = text(row?.name), display = text(row?.display_name);
+  const branch = typeof row?.code_repository_branch_uid === 'string' && UUID.test(row.code_repository_branch_uid) ? row.code_repository_branch_uid.toLowerCase() : undefined;
+  return { ...(name ? { name } : {}), ...(display ? { display_name: display } : {}), ...(branch ? { code_repository_branch_uid: branch } : {}) };
 }
 function endpoint(value: unknown, metadata = false): string {
   if (typeof value !== 'string') throw new ToolingError('API_ERROR', 'The backend returned no MCP endpoint.');
@@ -46,8 +58,7 @@ function connection(backend: string, row: any): Connection {
   const metadataQuery = new URL(metadataUrl).searchParams;
   if ([...metadataQuery.keys()].some(key => key !== 'resource_release_uid') || metadataQuery.getAll('resource_release_uid').length !== 1
     || metadataQuery.get('resource_release_uid') !== releaseUid) throw new ToolingError('API_ERROR', 'The MCP metadata targets another release.');
-  return { backend: requireBackend(backend), resource_release_uid: releaseUid,
-    ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name } : {}),
+  return { backend: requireBackend(backend), resource_release_uid: releaseUid, ...labels(row),
     mcp_connection: { url, transport: 'streamable-http', resource_metadata_url: metadataUrl,
       organization_environment_uid: uuid(c.organization_environment_uid),
       ...(typeof c.organization_environment_name === 'string' && c.organization_environment_name.trim() ? { organization_environment_name: c.organization_environment_name.trim() } : {}), active_revision_uid: uuid(c.active_revision_uid) } };
@@ -130,6 +141,55 @@ export class McpConnections {
     await client.initialize();
     return client;
   }
+  /** The release's name and repository from the release directory and its branch. Whatever
+   * cannot be read is left out: labels never make a working MCP unavailable. */
+  private async resolveLabels(value: Connection): Promise<Labels> {
+    const found: Labels = {};
+    const read = async <T>(apiPath: string): Promise<T | undefined> => {
+      try { return await this.session.request<T>(value.backend, 'GET', apiPath, undefined, true); }
+      catch { this.options.signal?.throwIfAborted(); return undefined; }
+    };
+    // The release detail carries no name or repository; the directory projection does.
+    const page = await read<any>('/api/v1/resource-releases/?search=' + encodeURIComponent(value.resource_release_uid) + '&limit=100');
+    const row = Array.isArray(page?.results) ? page.results.find((item: any) => typeof item?.uid === 'string' && item.uid.toLowerCase() === value.resource_release_uid) : undefined;
+    if (row) Object.assign(found, labels({ name: row.name, code_repository_branch_uid: row.code_repository_branch_uid }));
+    const branchUid = found.code_repository_branch_uid ?? value.code_repository_branch_uid;
+    if (branchUid) {
+      const branch = await read<unknown>('/api/v1/code-repository-branches/' + encodeURIComponent(branchUid) + '/');
+      try {
+        const parsed = codeRepositoryBranchFromResponse(branch, 'CodeRepositoryBranch response');
+        if (parsed.uid.toLowerCase() === branchUid) Object.assign(found, labels({ display_name: parsed.code_repository_name, code_repository_branch_uid: branchUid }));
+      } catch { /* an unreadable branch leaves the repository name out */ }
+    }
+    return found;
+  }
+  private labelled(value: Connection, found: Labels): Connection {
+    return connection(value.backend, { ...value, ...found });
+  }
+  /** Records saved before labels were stored are completed once, when the backend answers. */
+  private async backfill(rows: Connection[]): Promise<Connection[]> {
+    const pending = rows.filter(row => !row.display_name);
+    if (!pending.length) return rows;
+    const found = new Map<string, Labels>();
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (pending.length) {
+        const row = pending.shift()!;
+        const resolved = await this.resolveLabels(row);
+        const added = Object.entries(resolved).filter(([key, item]) => item !== row[key as keyof Labels]);
+        if (added.length) found.set(row.backend + ' ' + row.resource_release_uid, Object.fromEntries(added));
+      }
+    }));
+    if (!found.size) return rows;
+    const key = (row: Connection) => row.backend + ' ' + row.resource_release_uid;
+    const merge = (row: Connection) => found.has(key(row)) ? this.labelled(row, { ...found.get(key(row)) }) : row;
+    try { await this.update(all => all.map(merge)); }
+    catch (error) {
+      // A held lock or a failed write keeps the listing itself available.
+      if (error instanceof ToolingError && error.code === 'CANCELLED') throw error;
+      this.options.signal?.throwIfAborted();
+    }
+    return rows.map(merge);
+  }
   async dispatch(request: McpRequest, inputBackend: string): Promise<ActionResult> {
     let callStarted = false, resultData: unknown;
     try {
@@ -193,7 +253,7 @@ export class McpConnections {
         }
         summary = 'Available project MCP endpoints; discovery does not save a connection.';
       } else if (request.action === 'mcp-list') {
-        data = (await this.read()).filter(row => row.backend === backend && belongs(row));
+        data = await this.backfill((await this.read()).filter(row => row.backend === backend && belongs(row)));
         summary = 'Saved MCP connections for this backend. Availability is checked when used.';
       } else {
         const releaseUid = uuid(request.releaseUid);
@@ -203,16 +263,18 @@ export class McpConnections {
           await this.update(rows => rows.filter(row => !(row.backend === backend && row.resource_release_uid === releaseUid)));
           data = { resource_release_uid: releaseUid }; summary = 'The saved connection was removed.';
         } else {
-          const value = await this.current(backend, releaseUid);
+          let value = await this.current(backend, releaseUid);
           requireEnvironment(value);
           if (request.action !== 'mcp-add') {
             const saved = (await this.read()).find(row => row.backend === backend && row.resource_release_uid === releaseUid);
             if (!saved) throw new ToolingError('INVALID_REQUEST', 'Add this MCP connection before using it.');
             if (saved.mcp_connection.url !== value.mcp_connection.url) throw new ToolingError('INVALID_REQUEST', 'The MCP endpoint changed. Add the release again to confirm its new endpoint.');
+            value = this.labelled(value, labels(saved));
           }
           const client = await this.open(value);
           const tools = await client.tools();
           if (request.action === 'mcp-add') {
+            value = this.labelled(value, await this.resolveLabels(value));
             await this.update(rows => [...rows.filter(row => !(row.backend === backend && row.resource_release_uid === releaseUid)), value]);
             data = { connection: value, tools }; summary = 'MCP connection verified and saved. Its tools can now be used through the plugin.';
           } else if (request.action === 'mcp-tools') {
