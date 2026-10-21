@@ -79,14 +79,15 @@ export function projectEnvironment(context: Pick<ProjectContext, 'backend'>, inh
   return env;
 }
 
-export async function projectCapabilities(host: HostServices, context: ProjectContext, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<ActionCapability[]> {
+export async function projectCapabilities(host: HostServices, context: ProjectContext, env: NodeJS.ProcessEnv, signal?: AbortSignal, allowMcpSkills = false): Promise<ActionCapability[]> {
   const actions: ProjectAction[] = ['sync', 'sdk-status', 'update-sdk', 'update-agents', 'install-skills', 'skills-sync', 'install', 'env-cleanup', 'open-folder', 'signed-terminal'];
   if (!context.projectType) return actions.map(action => ({ action, state: 'unavailable', reason: 'Project type is ambiguous. Select --type.' }));
   const cli = await projectCli(context);
   const scoped = projectEnvironment(context, env);
   const results: ActionCapability[] = [];
   for (const action of actions) {
-    if (action === 'skills-sync') results.push({ action, state: 'unsupported', reason: 'Backend-owned skills currently require MainSequence MCP.' });
+    if (action === 'skills-sync') results.push({ action, state: allowMcpSkills ? (cli.available ? 'available' : 'unavailable') : 'unsupported',
+      reason: !allowMcpSkills ? 'Backend-owned skills currently require MainSequence MCP.' : !cli.available ? 'Install the project SDK before synchronizing its skills.' : undefined });
     else if (action === 'open-folder' || action === 'signed-terminal') results.push({ action, state: (action === 'open-folder' ? host.openFolder : host.openTerminal) ? 'available' : 'unsupported', reason: (action === 'open-folder' ? host.openFolder : host.openTerminal) ? undefined : 'This host has no native folder/terminal capability.' });
     else if (action === 'env-cleanup') results.push({ action, state: 'available' });
     else if (action === 'install') {

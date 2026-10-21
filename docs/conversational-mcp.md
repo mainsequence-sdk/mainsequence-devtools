@@ -35,6 +35,8 @@ If no developer session exists, use the existing Main Sequence hosted login. A c
 
 Connection metadata lives in mcp-connections.json beside the existing MainSequence CLI configuration, separated by backend and release UID. Reads/calls recheck release access and fetch the current tool catalog. A changed endpoint requires an explicit add again. Removing a connection does not revoke your login.
 
+The release UID identifies a connection. Its optional `name` is a display label from discovery; release detail responses omit it. Adding a connection and reading or calling its tools work without that label, including for saved connections. UID-based operations do not repeat discovery to obtain a name.
+
 Project tools enforce their ordinary permissions. The client adds no agent-specific allowlist or exclusions.
 
 ## Failures and limits

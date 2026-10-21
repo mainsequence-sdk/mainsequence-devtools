@@ -13,7 +13,7 @@ export type McpRequest = { backend?: string } & (
   | { action: 'mcp-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
 );
 type Connection = {
-  backend: string; resource_release_uid: string; name: string;
+  backend: string; resource_release_uid: string; name?: string;
   mcp_connection: { url: string; transport: 'streamable-http'; resource_metadata_url: string;
     organization_environment_uid: string; organization_environment_name: string; active_revision_uid: string };
 };
@@ -36,7 +36,7 @@ function endpoint(value: unknown, metadata = false): string {
 }
 function connection(backend: string, row: any): Connection {
   const c = row?.mcp_connection;
-  if (!c || c.transport !== 'streamable-http' || typeof row.name !== 'string' || !row.name.trim()) {
+  if (!c || c.transport !== 'streamable-http') {
     throw new ToolingError('API_ERROR', 'The selected release has no active platform MCP connection.');
   }
   if (typeof c.organization_environment_name !== 'string' || !c.organization_environment_name.trim()) {
@@ -48,7 +48,8 @@ function connection(backend: string, row: any): Connection {
   const metadataQuery = new URL(metadataUrl).searchParams;
   if ([...metadataQuery.keys()].some(key => key !== 'resource_release_uid') || metadataQuery.getAll('resource_release_uid').length !== 1
     || metadataQuery.get('resource_release_uid') !== releaseUid) throw new ToolingError('API_ERROR', 'The MCP metadata targets another release.');
-  return { backend: requireBackend(backend), resource_release_uid: releaseUid, name: row.name,
+  return { backend: requireBackend(backend), resource_release_uid: releaseUid,
+    ...(typeof row.name === 'string' && row.name.trim() ? { name: row.name } : {}),
     mcp_connection: { url, transport: 'streamable-http', resource_metadata_url: metadataUrl,
       organization_environment_uid: uuid(c.organization_environment_uid), organization_environment_name: c.organization_environment_name, active_revision_uid: uuid(c.active_revision_uid) } };
 }

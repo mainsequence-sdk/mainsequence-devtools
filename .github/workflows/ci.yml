@@ -20,3 +20,7 @@ jobs:
       - run: node scripts/pack-plugin.cjs
       - run: npm pack --ignore-scripts --pack-destination artifacts
       - run: npm run verify:package
+      - name: Install the pinned OpenCode V2 verification host
+        run: npm install --prefix "$RUNNER_TEMP/opencode-host" --no-audit --no-fund @opencode/cli@2.0.27
+      - name: Verify native OpenCode commands, terminal UI, MCP and permissions
+        run: MS_OPENCODE_BINARY="$RUNNER_TEMP/opencode-host/node_modules/.bin/opencode" MS_OPENCODE_TUI=1 npm run verify:package

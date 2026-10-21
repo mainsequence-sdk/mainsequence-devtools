@@ -1,6 +1,6 @@
 # MainSequence developer tooling
 
-One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, command runner, and Codex adapter. Both SDK repositories remain unchanged. VS Code now consumes the public package API and bundles its compiled code into the VSIX. There are no runtime npm dependencies or LLM API calls in the runner. The conversational MCP client calls the existing platform directory and selected project MCP endpoints; the original developer actions retain their deterministic execution.
+One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, command runner, and Codex and OpenCode V2 adapters. Both SDK repositories remain unchanged. VS Code now consumes the public package API and bundles its compiled code into the VSIX. There are no runtime npm dependencies or LLM API calls in the runner. The conversational MCP client calls the existing platform directory and selected project MCP endpoints; the original developer actions retain their deterministic execution.
 
 ## Build and run
 
@@ -86,6 +86,32 @@ Selection inserts a native skill mention. The hook accepts that linked mention o
 
 **Installed registration and execution are verified; desktop presentation still needs a manual check.** On 2026-10-08, actual Codex 0.162.0-alpha.2 `skills/list` reports the enabled `mainsequence-devtools:ms` entry with display name `ms`. App-server turns using its linked mention and explicit skill input verify blocking results and zero requests to a counted offline model endpoint for help, invalid commands and valid dependency syncs. Python and Node sync fixtures write dependency files with no backend requests or Git changes. Ordinary prompts reach the offline endpoint. The desktop menu/rendering and long-operation timeout UI have not been visually verified. Codex CLI 0.159.2 rejected custom `/ms` commands before submitting a turn; use `ms-devtools --help` in a terminal there. The skill supplies registration only; the executor is the local hook/runner and requires no MainSequence MCP. A disabled or untrusted hook cannot guarantee interception, so review and trust it before use. VS Code retains its existing opt-in SDK-owned MCP skills workflows.
 
+## OpenCode V2
+
+Build and install the bundled adapter globally, or for one project:
+
+```sh
+npm run build
+node dist/runner.js opencode-install --global
+# Alternative: install only into a specific project
+node dist/runner.js opencode-install --project "/path/to/project"
+```
+
+Restart OpenCode V2 after installation. Type `/ms --help` for readable help, `/ms sync` to refresh the project's dependencies, or `/ms` and submit to open the native action menu. Slash completion may require Enter to accept the entry, then Enter to submit. The same actions are available in the command palette. Native dialogs show account/project results, running actions, cancellation, and recent results. Commands use an executable handler and never submit an agent prompt, including failures.
+
+Choose “Connect a project MCP” to search the existing directory by project or Environment, then select a release. The adapter registers its live tool schemas in OpenCode immediately. “Manage connected MCPs” lists tools or disconnects a project; `/ms mcp-refresh` refreshes registrations. Conversational discovery and connection tools also let the agent perform these steps. Calls reuse the existing developer login, saved connection metadata and private release credential exchange. OpenCode applies its tool permissions; the project gateway enforces platform access. Selected MCPs are plugin tools, not additional native MCP-server configuration entries.
+
+The single npm package includes a generated OpenCode artifact with server and terminal entry points. Installation copies only that owned artifact and records the actual Node executable, preserving unrelated OpenCode configuration. Node 22+ is required on the executing server. With a remote OpenCode server, actions and credential access happen there; see [configuration, distribution and verification](docs/opencode-v2.md) and [ADR 0003](docs/adr/0003-opencode-v2-adapter.md). Version 0.3.0 is prepared locally; publication is a separate release step.
+
+## Claude Desktop Code
+
+The Claude Desktop implementation, account integration, tests, documentation,
+marketplace and releases are maintained in
+[mainsequence-claude-desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop).
+It imports the versioned devtools package. This repository owns the
+[reusable project operations](docs/shared-project-operations.md).
+See [integration ownership and deferred extractions](docs/integration-roadmap.md).
+
 ## Reusable API
 
 ```ts
@@ -97,9 +123,9 @@ const result = await tools.dispatch({
 });
 ```
 
-The same dispatcher serves the library, CLI, and Codex hook. `HostServices` supplies browser/process execution, safe progress, cancellation, and optional native folder/terminal operations. Shared code imports no host API. Public types include `ActionRequest`, `ActionResult`, `ProjectContext`, `ActionCapability`, and `SessionStatus`. Credentials stay private to the session service.
+The same dispatcher serves the library, CLI, Codex hook, and OpenCode V2 server adapter. `HostServices` supplies browser/process execution, safe progress, cancellation, and optional native folder/terminal operations. Shared code imports no host API. Public types include `ActionRequest`, `ActionResult`, `ProjectContext`, `ActionCapability`, and `SessionStatus`. Credentials stay private to the session service.
 
-Phase 2 publishes `@dev-mainsequence/devtools@0.2.1` to public npm; VS Code 0.1.47 pins that exact archive. It includes the readable Codex output, trailing-newline handling and dependency-only sync. One npm artifact contains the public library, runner, and Codex plugin manifest/hooks; the standalone plugin archive comes from the same build. See [release and installation](docs/phase-2-release.md). VS Code's existing SecretStorage fallback remains in that extension; Codex introduces no fallback project-token projection. Claude Code and OpenCode adapters are not created until their host execution contracts are validated.
+Phase 2 publishes `@dev-mainsequence/devtools@0.2.1` to public npm; VS Code 0.1.47 pins that exact archive. It includes the readable Codex output, trailing-newline handling and dependency-only sync. One npm artifact contains the public library, runner, and Codex plugin manifest/hooks; the standalone plugin archive comes from the same build. See [release and installation](docs/phase-2-release.md). VS Code's existing SecretStorage fallback remains in that extension; Codex introduces no fallback project-token projection. Version 0.3.0 adds OpenCode V2 in the same npm artifact, preserving the library export.
 
 ## Verification
 
@@ -108,7 +134,7 @@ npm run typecheck
 npm test
 npm run pack:plugin
 npm pack --ignore-scripts --pack-destination artifacts
-node scripts/verify-package.cjs artifacts/dev-mainsequence-devtools-0.2.1.tgz
+node scripts/verify-package.cjs artifacts/dev-mainsequence-devtools-0.3.0.tgz
 node scripts/verify-sdk-interop.cjs /path/to/mainsequence-sdk /path/to/command-center-sdk
 # Optional, after installing and reviewing the plugin hook:
 node scripts/verify-codex-host.cjs

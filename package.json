@@ -1,7 +1,7 @@
 {
   "name": "@dev-mainsequence/devtools",
-  "version": "0.2.1",
-  "description": "Shared MainSequence developer actions and deterministic Codex adapter",
+  "version": "0.3.0",
+  "description": "Shared MainSequence developer actions, MCP client, and Codex and OpenCode V2 adapters",
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -12,7 +12,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./opencode": "./opencode/index.mjs",
+    "./opencode/tui": "./opencode/tui.mjs",
+    "./opencode/rpc": "./opencode/rpc.mjs"
   },
   "bin": {
     "ms-devtools": "./dist/runner.js"
@@ -27,19 +30,23 @@
     "hooks",
     "skills",
     "assets",
-    "build-info.json"
+    "build-info.json",
+    "opencode"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-plugin.cjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node scripts/clean-build.cjs && tsc -p tsconfig.json && node scripts/build-opencode.cjs && node scripts/build-plugin.cjs",
+    "typecheck": "tsc -p tsconfig.json && node scripts/build-opencode.cjs && tsc -p tsconfig.opencode.json",
     "test": "npm run build && node --test tests/*.test.cjs",
     "pack:plugin": "npm run build && node scripts/pack-plugin.cjs",
     "prepack": "npm run build",
     "verify:package": "node scripts/verify-package.cjs",
+    "verify:opencode": "node scripts/verify-opencode-host.cjs",
     "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && node scripts/pack-plugin.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package"
   },
   "devDependencies": {
+    "@opencode/plugin": "2.0.27",
     "@types/node": "18.19.130",
+    "solid-js": "1.9.15",
     "typescript": "5.9.3"
   },
   "repository": {

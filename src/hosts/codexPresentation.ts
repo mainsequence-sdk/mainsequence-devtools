@@ -1,7 +1,7 @@
 import { ActionResult } from '../shared/models';
 
 // Presentation belongs to the host; action models and SDK dispatch stay shared.
-const commands: { action: string; title: string; usage: string; group: string; description?: string }[] = [
+export const developerCommands: { action: string; title: string; usage: string; group: string; description?: string }[] = [
   { action: 'login', title: 'Sign in', usage: '/ms login', group: 'Account' },
   { action: 'auth-status', title: 'Check your login', usage: '/ms auth-status', group: 'Account' },
   { action: 'refresh-token', title: 'Renew your login', usage: '/ms refresh-token', group: 'Account' },
@@ -19,6 +19,7 @@ const commands: { action: string; title: string; usage: string; group: string; d
   { action: 'install-skills', title: 'Install SDK skills', usage: '/ms install-skills', group: 'Maintenance' },
   { action: 'env-cleanup', title: 'Remove old project credentials', usage: '/ms env-cleanup', group: 'Maintenance' },
 ];
+const commands = developerCommands;
 
 export function codexHelp(argv: string[]): string {
   const command = commands.find(item => item.action === argv[0]);

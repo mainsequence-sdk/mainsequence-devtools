@@ -4,10 +4,17 @@ import { createNodeHost } from './shared/process';
 import { ActionResult, ToolingError } from './shared/models';
 import { parseArguments, HELP } from './shared/arguments';
 import { handleCodexPrompt } from './hosts/codex';
+import { executeOpenCodeInput } from './hosts/opencodeProtocol';
+import { installOpenCode } from './hosts/opencodeInstall';
 
 async function main() {
   const argv = process.argv.slice(2);
+  if (argv[0] === 'opencode-install') {
+    process.stdout.write(await installOpenCode(argv.slice(1)) + '\n');
+    return;
+  }
   const hook = argv.length === 1 && argv[0] === '--codex-hook';
+  const opencode = argv.length === 1 && argv[0] === '--opencode-runner';
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
@@ -15,8 +22,20 @@ async function main() {
   // Finish a handled prompt before Codex's 600-second hook limit.
   const timer = hook ? setTimeout(stop, 550_000) : undefined;
   // The Codex hook reports only its final blocking result. Sync is local and needs no backend preflight.
-  const tooling = createDevTools({ host: createNodeHost(hook || argv.includes('--json') ? undefined : message => process.stderr.write(message + '\n')), signal: controller.signal });
+  const tooling = createDevTools({ host: createNodeHost(opencode ? message => process.stdout.write(JSON.stringify({ type: 'progress', message }) + '\n') : hook || argv.includes('--json') ? undefined : message => process.stderr.write(message + '\n')), signal: controller.signal });
   try {
+    if (opencode) {
+      let stdin = '';
+      for await (const chunk of process.stdin) {
+        stdin += chunk;
+        if (Buffer.byteLength(stdin) > 1_000_000) throw new ToolingError('INVALID_REQUEST', 'Action input is too large.');
+      }
+      const result = Number(process.versions.node.split('.')[0]) < 22
+        ? { schemaVersion: 1, action: 'command', status: 'failure', summary: 'Node 22+ is required.', error: { code: 'MISSING_PREREQUISITE', message: 'Node 22+ is required.' } }
+        : await executeOpenCodeInput(JSON.parse(stdin), tooling.dispatch, process.cwd());
+      process.stdout.write(JSON.stringify({ type: 'result', result }) + '\n');
+      return;
+    }
     if (hook) {
       let stdin = '';
       for await (const chunk of process.stdin) {
@@ -46,8 +65,9 @@ async function main() {
     process.removeListener('SIGTERM', stop);
   }
 }
-void main().catch(() => {
+void main().catch(error => {
   // A handled-hook failure must block, never pass through to model inference.
   if (process.argv.includes('--codex-hook')) process.stdout.write(JSON.stringify({ decision: 'block', reason: 'Developer action runner failed.' }) + '\n');
-  else { process.stderr.write('Developer action runner failed.\n'); process.exitCode = 1; }
+  else if (process.argv.includes('--opencode-runner')) process.stdout.write(JSON.stringify({ type: 'result', result: { schemaVersion: 1, action: 'invalid', status: 'failure', summary: 'Invalid action input or runner failure.', error: { code: 'INVALID_REQUEST', message: 'Invalid action input or runner failure.' } } }) + '\n');
+  else { process.stderr.write((error instanceof ToolingError ? error.message : 'Developer action runner failed.') + '\n'); process.exitCode = 1; }
 });
