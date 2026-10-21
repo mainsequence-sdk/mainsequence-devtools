@@ -270,10 +270,11 @@ test('SSE handles chunked CRLF and rejects malformed or mismatched responses', a
 test('packaged client works across separate processes without the checkout or runtime dependencies', async t => {
   const { execFile } = require('node:child_process');
   const { promisify } = require('node:util');
-  const f = await fixture(t), installed = path.join(f.dir, 'installed plugin');
-  await fs.cp(path.resolve('artifacts/codex/mainsequence-devtools'), installed, { recursive: true });
+  const f = await fixture(t), installed = path.join(f.dir, 'installed package');
+  // The published package is its compiled distribution; hosts vendor it without node_modules.
+  await fs.cp(path.resolve('dist'), path.join(installed, 'dist'), { recursive: true });
+  await fs.copyFile(path.resolve('package.json'), path.join(installed, 'package.json'));
   assert.equal(await fs.stat(path.join(installed, 'node_modules')).then(() => true).catch(() => false), false);
-  assert.ok((await fs.stat(path.join(installed, 'skills/mainsequence-mcp/SKILL.md'))).isFile());
   const env = { PATH: process.env.PATH, MAINSEQUENCE_ENDPOINT: f.backend, MAINSEQUENCE_ACCESS_TOKEN: 'private-platform-token' };
   const run = async action => {
     const result = await promisify(execFile)(process.execPath, ['-e',

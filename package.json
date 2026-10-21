@@ -1,7 +1,7 @@
 {
   "name": "@dev-mainsequence/devtools",
-  "version": "0.2.8",
-  "description": "Shared MainSequence developer actions, project operations and deterministic Codex adapter",
+  "version": "0.3.0",
+  "description": "Shared MainSequence developer actions, project operations, MCP client and command runner",
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -19,24 +19,17 @@
   },
   "files": [
     "dist",
-    "docs",
     "README.md",
     "LICENSE",
-    "NOTICE",
-    ".codex-plugin",
-    "hooks",
-    "skills",
-    "assets",
-    "build-info.json"
+    "NOTICE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-plugin.cjs",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.cjs",
-    "pack:plugin": "npm run build && node scripts/pack-plugin.cjs",
     "prepack": "npm run build",
     "verify:package": "node scripts/verify-package.cjs",
-    "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && node scripts/pack-plugin.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package"
+    "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package"
   },
   "devDependencies": {
     "@types/node": "18.19.130",

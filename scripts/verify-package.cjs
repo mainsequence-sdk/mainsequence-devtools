@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const exists = file => fs.stat(file).then(() => true).catch(() => false);
 async function main() {
   const archive = path.resolve(process.argv[2] || `artifacts/dev-mainsequence-devtools-${require('../package.json').version}.tgz`);
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'ms npm consumer '));
@@ -11,21 +12,23 @@ async function main() {
     await fs.mkdir(packageDir, { recursive: true });
     const unpack = spawnSync('tar', ['-xzf', archive, '-C', packageDir, '--strip-components=1'], { encoding: 'utf8' });
     if (unpack.status !== 0) throw new Error('Could not unpack the local npm artifact.');
-    const manifest = JSON.parse(await fs.readFile(path.join(packageDir, '.codex-plugin/plugin.json'), 'utf8'));
     const pkg = JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8'));
-    for (const removed of ['claude', 'dist/claudeRunner.js', 'dist/hosts/claudeAccounts.js']) {
-      if (await fs.stat(path.join(packageDir, removed)).then(() => true).catch(() => false)) throw new Error('Shared package contains the removed Claude implementation: ' + removed);
+    for (const required of ['dist/index.js', 'dist/index.d.ts', 'dist/runner.js', 'dist/shared/mcp.js', 'README.md', 'LICENSE', 'NOTICE']) {
+      if (!await exists(path.join(packageDir, required))) throw new Error('The npm artifact must contain ' + required);
     }
-    if (manifest.version !== pkg.version || manifest.hooks !== './hooks/hooks.json') throw new Error('The npm artifact must contain the versioned Codex compatibility manifest.');
-    if (manifest.skills !== './skills/' || !await fs.stat(path.join(packageDir, 'skills/ms/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the native ms slash-menu registration.');
-    if (!await fs.stat(path.join(packageDir, 'skills/mainsequence-mcp/SKILL.md')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the conversational MCP skill.');
-    if (!await fs.stat(path.join(packageDir, 'dist/shared/mcp.js')).then(() => true).catch(() => false)) throw new Error('The npm artifact must contain the MCP client.');
-    if (await fs.stat(path.join(packageDir, 'plugin.json')).then(() => true).catch(() => false)) throw new Error('A root Agent Plugins manifest suppresses hooks in the tested Codex runtime.');
+    // Host integrations are released from their own repositories; the shared package carries neither.
+    for (const removed of ['claude', 'dist/claudeRunner.js', 'dist/hosts', '.codex-plugin', 'hooks', 'skills', 'assets', 'build-info.json', 'plugin.json', 'docs', 'manifests']) {
+      if (await exists(path.join(packageDir, removed))) throw new Error('Shared package contains a host integration file: ' + removed);
+    }
+    if (pkg.bin['ms-devtools'] !== './dist/runner.js') throw new Error('The npm artifact must expose the ms-devtools runner.');
     await fs.writeFile(path.join(temporary, 'consumer.mjs'), `
 import assert from 'node:assert/strict';
-import { createDevTools, createNodeHost, createProjectOperations, updateDevcontainerJsonc } from '@dev-mainsequence/devtools';
+import { createDevTools, createNodeHost, createProjectOperations, updateDevcontainerJsonc, parseArguments, tokenizeCommand, HELP } from '@dev-mainsequence/devtools';
 assert.equal(typeof createProjectOperations, 'function');
 assert.match(updateDevcontainerJsonc('{}', 'example:latest'), /example:latest/);
+assert.match(HELP, /^MainSequence developer tooling/);
+assert.deepEqual(tokenizeCommand('status --path "a folder"'), ['status', '--path', 'a folder']);
+assert.equal(parseArguments(['status', '--path', '/a project'], '/cwd').request.root, '/a project');
 const tools = createDevTools({ host: createNodeHost(), env: {}, store: null });
 const result = await tools.dispatch({ action: 'auth-status', backend: 'https://fixture.example' });
 assert.equal(result.status, 'success');
@@ -36,6 +39,12 @@ console.log('Public npm API passed from an isolated ESM consumer, without SDKs o
     const result = spawnSync(process.execPath, ['consumer.mjs'], { cwd: temporary, encoding: 'utf8' });
     if (result.status !== 0) throw new Error('Public consumer check failed: ' + result.stderr);
     process.stdout.write(result.stdout);
+    const runner = path.join(packageDir, 'dist/runner.js');
+    const help = spawnSync(process.execPath, [runner, '--help'], { cwd: temporary, encoding: 'utf8' });
+    if (help.status !== 0 || !/MainSequence developer tooling/.test(help.stdout)) throw new Error('The packaged runner must print its help.');
+    const hook = spawnSync(process.execPath, [runner, '--codex-hook'], { cwd: temporary, input: JSON.stringify({ prompt: '/ms --help' }), encoding: 'utf8' });
+    if (hook.status === 0 || /decision/.test(hook.stdout)) throw new Error('The shared runner must not serve the Codex hook; that entry point lives in the Codex plugin.');
+    console.log('Packaged ms-devtools runner serves the terminal CLI only.');
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });
