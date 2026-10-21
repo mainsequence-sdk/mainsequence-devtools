@@ -1,5 +1,7 @@
 # Phase 2 release and installation
 
+> Historical record of the 0.2.x releases. Since devtools 0.3.0 the Codex plugin is built, verified and released from [mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin); the Codex artifact, local marketplace and `verify-codex-*` scripts named below no longer exist in this repository. See [ADR 0003](adr/0003-codex-plugin-extraction.md).
+
 One repository, one npm package, one lockfile. Both SDKs remain unchanged.
 
 ## Artifacts

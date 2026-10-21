@@ -1,5 +1,7 @@
 # Phase 2 verification — updated 2026-10-08
 
+> Historical record of the 0.2.x releases. Since devtools 0.3.0 the Codex plugin is built, verified and released from [mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin); the Codex artifact, local marketplace and `verify-codex-*` scripts named below no longer exist in this repository. See [ADR 0003](adr/0003-codex-plugin-extraction.md).
+
 The shared package and VS Code migration are implemented. The public npm registry serves `@dev-mainsequence/devtools@0.2.1`; its downloaded archive matches VS Code's lockfile integrity `sha512-7cYZN5fUJi4347BO38LES6Uvi+p+szR+SqLiv9ngsnC91S/6vcoKIfRr38xCcSJ0LmG4vlx+namtLqmDSzxt7g==`. This release includes the Codex line-ending and readable-output fixes and dependency-only sync. `mainsequence-devtools@mainsequence-local` is installed, enabled and trusted in the local Codex plugin cache (`~/.codex/plugins/cache/mainsequence-local/mainsequence-devtools/0.2.1`). All 50 compiled runner, plugin, hook, skill and asset files match the repository build. Published archives remain immutable.
 
 ## Compatibility audit — 2026-10-08

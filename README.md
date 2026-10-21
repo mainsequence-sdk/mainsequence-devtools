@@ -1,6 +1,6 @@
 # MainSequence developer tooling
 
-One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, command runner, and Codex adapter. Both SDK repositories remain unchanged. VS Code now consumes the public package API and bundles its compiled code into the VSIX. There are no runtime npm dependencies or LLM API calls in the runner. The conversational MCP client calls the existing platform directory and selected project MCP endpoints; the original developer actions retain their deterministic execution.
+One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, the `ms-devtools` command runner and the project MCP client. Both SDK repositories remain unchanged. Host integrations live in their own repositories and consume only this package's public API: [VS Code](https://github.com/mainsequence-sdk/ms-vscode-extension), [Claude Desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop) and, since 0.3.0, the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin) ([ADR 0003](docs/adr/0003-codex-plugin-extraction.md)). There are no runtime npm dependencies or LLM API calls in the runner. The MCP client calls the existing platform directory and selected project MCP endpoints; the developer actions retain their deterministic execution.
 
 ## Build and run
 
@@ -31,11 +31,9 @@ Persistent login uses macOS Keychain or Linux Secret Service (`secret-tool` from
 
 The machine record is the SDKs' existing `MainSequenceCLI.auth` service, backend-scoped account, and version-1 JSON format. There is no Codex-specific credential record and no token file. `refresh-token` renews the saved machine session; it does not replace a token exported into another shell. `logout` removes this backend's local record and separately reports whether remote revocation completed.
 
-## Conversational project MCPs
+## Project MCP client
 
-Ask Codex which internal MCPs are available, ask it to add one, then ask it to use that project's tools. The bundled mainsequence-mcp skill handles ordinary conversation without /ms. It remembers connections and invokes tools through a local MCP client, using the existing developer session and short-lived release credentials. A project connection is usable immediately through the helper; it is not a separate native Codex MCP registration.
-
-See [usage, authentication, failures and rollout](docs/conversational-mcp.md) and [ADR 0002](docs/adr/0002-conversational-project-mcp-client.md). The new skill is part of the built artifact; the published/installed 0.2.1 archive is unchanged until a versioned release.
+The `mcp-discover`, `mcp-add`, `mcp-list`, `mcp-remove`, `mcp-tools` and `mcp-call` actions discover the platform's MCP directory, remember a selected release and invoke its tools through a local MCP client, using the existing developer session and short-lived release credentials. They are available from `ms-devtools` and from `createDevTools().dispatch()`; hosts may inject `mcpConnectionsPath`. The conversational `mainsequence-mcp` skill that lets Codex use them without `/ms` ships with the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin), together with [its user guide](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/conversational-mcp.md) and [ADR 0002](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/adr/0002-conversational-project-mcp-client.md).
 
 ## Project actions
 
@@ -66,27 +64,11 @@ Mutations hold a repository lock in the Git common directory, also covering link
 
 Raw SDK output is private and is not included in results or hook output. Progress reports command lifecycle; supported structured status metadata is filtered. Run the SDK directly in a private terminal when its detailed diagnostic output is needed. Raw credentials are never arguments, public results, or model context.
 
-## Codex artifact and slash-menu entry
+## Codex plugin
 
-`npm run build` creates the installable plugin directory at `artifacts/codex/mainsequence-devtools/`, containing `.codex-plugin/plugin.json`, the `ms` and `mainsequence-mcp` skills, hook configuration, and the compiled runner. `npm run pack:plugin` also creates a standalone `.tgz`. The artifact runs without this checkout, sibling repositories, `node_modules`, or an npm download at execution time; Node 22+ remains a runtime prerequisite. Codex 0.159.2 skips hooks from the newer root Agent Plugins manifest; the compatibility entry point is deliberate and was verified in the installed host.
+The Codex plugin (`mainsequence` in the `mainsequence` marketplace, npm package `@dev-mainsequence/codex-plugin`) is built, verified and released from [mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin). It vendors the exact pinned devtools package into its artifact, so an installed plugin needs neither this checkout nor an npm download at execution time. Its hook runs the `/ms` slash-menu commands before inference, and its `mainsequence-mcp` skill exposes the MCP client above in conversation.
 
-Load the built directory through your Codex local plugin installation workflow, then review and trust its hook definition. Plugin installation does not automatically trust hooks. Packaging follows [OpenAI's plugin format](https://developers.openai.com/plugins/build/plugins); the prompt handler uses the documented [UserPromptSubmit blocking decision](https://learn.chatgpt.com/docs/hooks).
-
-After a terminal installation, start a new Codex chat or toggle MainSequence Developer Tools off and on in the desktop Plugins settings to hot-reload existing chats. An already-loaded chat can display the skill entry while retaining its pre-install hook configuration. The isolated reload regression in `scripts/verify-codex-reload.cjs` verifies this distinction.
-
-In Codex desktop, type `/ms` and **select `ms` from the slash menu**, then append the arguments and submit. Enabled skills supply native slash-menu entries; this small, explicit-only skill registers the interface. The trusted hook executes the action before inference. See [Codex slash commands](https://learn.chatgpt.com/docs/reference/slash-commands). Examples, shown in slash-command notation:
-
-```text
-/ms --help
-/ms login --backend https://api.main-sequence.app
-/ms refresh-token --backend https://api.main-sequence.app
-/ms status
-/ms sync
-```
-
-Selection inserts a native skill mention. The hook accepts that linked mention only when it references this plugin's own `skills/ms/SKILL.md`, then parses the single-line arguments as data; no shell expansion or evaluation occurs. It also handles literal `/ms` input if a host submits it. Ordinary prompts pass through without dispatch. Handled actions return a blocking decision on both success and failure, with readable, token-free output in the hook reason/UI message. The default help is a compact getting-started menu; `/ms --help --all` lists the developer commands and `/ms COMMAND --help` shows its options. Repository results show names, branches and IDs; account/project results use readable labels and summaries. JSON is an explicit export with `--json`; default results never dump the data object. Codex's “Hook blocked this message” label means the hook stopped the prompt before inference; the result itself states whether the action succeeded or failed. The hook enforces a bounded action timeout.
-
-**Installed registration and execution are verified; desktop presentation still needs a manual check.** On 2026-10-08, actual Codex 0.162.0-alpha.2 `skills/list` reports the enabled `mainsequence-devtools:ms` entry with display name `ms`. App-server turns using its linked mention and explicit skill input verify blocking results and zero requests to a counted offline model endpoint for help, invalid commands and valid dependency syncs. Python and Node sync fixtures write dependency files with no backend requests or Git changes. Ordinary prompts reach the offline endpoint. The desktop menu/rendering and long-operation timeout UI have not been visually verified. Codex CLI 0.159.2 rejected custom `/ms` commands before submitting a turn; use `ms-devtools --help` in a terminal there. The skill supplies registration only; the executor is the local hook/runner and requires no MainSequence MCP. A disabled or untrusted hook cannot guarantee interception, so review and trust it before use. VS Code retains its existing opt-in SDK-owned MCP skills workflows.
+The marketplace file `.agents/plugins/marketplace.json` stays in this repository because people added it with `codex plugin marketplace add mainsequence-sdk/mainsequence-devtools`. It points at the published plugin package. Devtools 0.2.8 was the last package that carried the plugin itself, under the former name `mainsequence-devtools`; the plugin repository's README explains the migration.
 
 ## Reusable API
 
@@ -99,24 +81,20 @@ const result = await tools.dispatch({
 });
 ```
 
-The same dispatcher serves the library, CLI, and Codex hook. `HostServices` supplies browser/process execution, safe progress, cancellation, and optional native folder/terminal operations. Shared code imports no host API. Public types include `ActionRequest`, `ActionResult`, `ProjectContext`, `ActionCapability`, and `SessionStatus`. Credentials stay private to the session service.
+The same dispatcher serves the library, the CLI and the host runners (the Claude Desktop worker and the Codex hook). `parseArguments`, `tokenizeCommand` and `HELP` are exported so a host runner can parse the same command line as `ms-devtools`. `HostServices` supplies browser/process execution, safe progress, cancellation, and optional native folder/terminal operations. Shared code imports no host API. Public types include `ActionRequest`, `ActionResult`, `ProjectContext`, `ActionCapability`, and `SessionStatus`. Credentials stay private to the session service.
 
-Phase 2 publishes `@dev-mainsequence/devtools@0.2.1` to public npm; VS Code 0.1.47 pins that exact archive. It includes the readable Codex output, trailing-newline handling and dependency-only sync. One npm artifact contains the public library, runner, and Codex plugin manifest/hooks; the standalone plugin archive comes from the same build. See [release and installation](docs/phase-2-release.md). VS Code's existing SecretStorage fallback remains in that extension; Codex introduces no fallback project-token projection. Claude Code and OpenCode adapters are not created until their host execution contracts are validated.
+Version 0.3.0 publishes the library and the `ms-devtools` runner only: the npm archive contains `dist`, `README.md`, `LICENSE` and `NOTICE`. VS Code and Claude Desktop pin exact published versions; the Codex plugin does the same from its own repository. See [release and installation](docs/phase-2-release.md) for the publishing procedure, which is unchanged. VS Code's existing SecretStorage fallback remains in that extension; no host introduces fallback project-token projection.
 
 ## Verification
 
 ```sh
-npm run typecheck
-npm test
-npm run pack:plugin
-npm pack --ignore-scripts --pack-destination artifacts
-node scripts/verify-package.cjs artifacts/dev-mainsequence-devtools-0.2.1.tgz
+npm run release:check
 node scripts/verify-sdk-interop.cjs /path/to/mainsequence-sdk /path/to/command-center-sdk
-# Optional, after installing and reviewing the plugin hook:
-node scripts/verify-codex-host.cjs
 ```
 
-Tests use a loopback fixture backend, synthetic in-memory store entries, stand-ins for native store programs, installed-CLI fixtures, and temporary Git repositories. They never log in to a real backend or read/write the user's credentials. Loopback networking must be permitted to run the browser tests.
+`release:check` type-checks, builds, runs the tests, checks release metadata and the Codex marketplace file, packs the npm archive into `artifacts/` and verifies it from an isolated consumer. The Codex host checks moved to the plugin repository with the plugin.
+
+Tests use a loopback fixture backend, synthetic in-memory store entries, stand-ins for native store programs, installed-CLI fixtures, and temporary Git repositories. They never log in to a real backend or read/write the user's credentials. Loopback networking must be permitted to run the browser tests. The parser, tokenizer and terminal runner have their own suite in `tests/arguments.test.cjs`, since host runners depend on them.
 
 The optional SDK compatibility script checks the **actual provided SDK source implementations** against synthetic in-memory records in both directions, with an isolated temporary Python home. It imports the SDK private session implementation only for compatibility verification, never as a product dependency, and loads its dependencies from the specified checkout without running the SDK initializer. Set `MAINSEQUENCE_TEST_PYTHON=/path/to/sdk/.venv/bin/python` when its CLI dependencies are unavailable to `python3`. Native-store behavior is tested using the extracted macOS/Linux program fixtures; live OS-store and backend refresh-rotation interoperability require a separate release check.
 
@@ -132,7 +110,8 @@ See [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md), [Phase-1 ve
 
 Version 0.2.2 adds the [public project operations API](docs/shared-project-operations.md).
 Claude Desktop is maintained in [its own repository](https://github.com/mainsequence-sdk/mainsequence-claude-desktop).
-See the [integration roadmap](docs/integration-roadmap.md) for ownership and deferred Codex/OpenCode extractions.
+The Codex plugin is maintained in [its own repository](https://github.com/mainsequence-sdk/mainsequence-codex-plugin) since 0.3.0.
+See the [integration roadmap](docs/integration-roadmap.md) for ownership and the deferred OpenCode extraction.
 
 Workspace defaults and environment-scoped MCP host APIs are documented in
 [workspace settings and environments](docs/workspace-environments.md).

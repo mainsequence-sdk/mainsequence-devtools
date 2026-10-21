@@ -3,10 +3,3 @@ dist/
 artifacts/
 *.tgz
 .env
-
-/plugin.json
-/.codex-plugin/
-/hooks/
-/skills/
-/assets/
-/build-info.json

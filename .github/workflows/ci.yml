@@ -17,6 +17,5 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: node scripts/check-release.cjs
-      - run: node scripts/pack-plugin.cjs
       - run: npm pack --ignore-scripts --pack-destination artifacts
       - run: npm run verify:package

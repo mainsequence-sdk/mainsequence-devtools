@@ -7,12 +7,14 @@ public API, pins a compatible version, and owns its host-specific implementation
 | --- | --- | --- |
 | VS Code | [ms-vscode-extension](https://github.com/mainsequence-sdk/ms-vscode-extension) already owns the extension and pins devtools; inspected version 0.1.47 uses 0.2.1. | No repository move or pin update in this migration. Adoption of new shared operations is separate work. |
 | Claude Desktop | [mainsequence-claude-desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop) owns all Claude UI, lifecycle, account switching, worker transport, tests, docs, marketplace and releases. | Depends on the released devtools package; no sibling checkout or private imports. |
-| Codex | Existing implementation remains in devtools. | Deferred: extract adapter, manifests, host tests and releases into an independent repository. Preserve plugin identity and installation compatibility. |
+| Codex | Extracted on 2026-10-21: [mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin) owns the hook adapter, presentation, manifests, skills, host checks, tests, docs and releases of the `mainsequence` plugin ([ADR 0003](adr/0003-codex-plugin-extraction.md)). | Depends on the released devtools package; no sibling checkout or private imports. The Codex marketplace file stays in this repository because people added it by this repository's URL. |
 | OpenCode | Existing implementation remains in the development checkout. | Deferred: extract server/TUI/RPC integration, manifests, host tests and releases into an independent repository. Preserve plugin identity and configuration. |
 
-Future Codex/OpenCode extraction is **not implemented by the Claude migration**.
-It needs a separately agreed repository destination, compatibility plan, package
-pin, host verification and release. No new repositories are created for it now.
+The Codex extraction is implemented by devtools 0.3.0; the plugin is renamed from
+`mainsequence-devtools` to `mainsequence`, so existing installs migrate by installing
+the new entry (see the Codex repository's README). The OpenCode extraction remains
+deferred: it needs a separately agreed repository destination, compatibility plan,
+package pin, host verification and release.
 
 The 0.2.2 core release adds reusable project operations without publishing pending
 OpenCode changes from the development checkout. That checkout retains its planned
