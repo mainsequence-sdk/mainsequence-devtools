@@ -6,6 +6,11 @@ import * as http from 'http';
 import { normalizeBackendUrl } from './config';
 import { clearSession, CredentialStore, ForeignEntryError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
 import { HostServices, SessionService, SessionStatus, SessionPersistence, ToolingError } from './models';
+import { validateExpectedAccount } from './accountScope';
+
+class AccountChangedError extends ToolingError {
+  constructor() { super('AUTH_REJECTED', 'The MainSequence account or session changed. Refresh the current view before continuing.'); }
+}
 
 export function requireBackend(input: string): string {
   const backend = normalizeBackendUrl(input);
@@ -57,6 +62,7 @@ export class MachineSessionService implements SessionService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly renewals = new Map<string, Promise<MachineSession>>();
   private readonly secrets = new Set<string>();
+  private readonly verifiedAccounts = new Map<string, string>();
   constructor(private readonly host: HostServices, private readonly options: {
     store?: CredentialStore | null;
     persistence?: SessionPersistence;
@@ -149,13 +155,15 @@ export class MachineSessionService implements SessionService {
       this.options.signal?.removeEventListener('abort', abort);
     }
   }
-  private renew(backend: string): Promise<MachineSession> {
-    const running = this.renewals.get(backend);
+  private renew(backend: string, expectedAccount?: string): Promise<MachineSession> {
+    const renewalKey = JSON.stringify([backend, expectedAccount]);
+    const running = this.renewals.get(renewalKey);
     if (running) return running;
     const task = (async () => {
       // Bypass cached state: another SDK process may have rotated the refresh token.
       const previous = await this.saved(backend);
       if (!previous?.refresh) throw new ToolingError('NOT_AUTHENTICATED', 'No refreshable machine session is saved for this backend.');
+      if (expectedAccount !== undefined && previous.username && previous.username !== expectedAccount) throw this.accountChanged();
       let data: unknown;
       try { data = await this.http(backend, 'POST', '/auth/jwt-token/token/refresh/', { refresh: previous.refresh }); }
       catch (error) {
@@ -163,11 +171,18 @@ export class MachineSessionService implements SessionService {
         throw error;
       }
       const session = this.remember(tokenPair(data, previous));
+      if (expectedAccount !== undefined) {
+        const current = await this.saved(backend);
+        if (!current || current.access !== previous.access || current.refresh !== previous.refresh) throw this.accountChanged();
+      }
+      // Refresh may rotate the old token. Keep the new pair even if the subsequent
+      // profile check is unavailable; no domain request runs before that check passes.
       await this.persist(backend, session);
+      if (expectedAccount !== undefined) await this.verifyAccount(backend, session, expectedAccount);
       return session;
     })();
-    this.renewals.set(backend, task);
-    void task.finally(() => this.renewals.delete(backend)).catch(() => {});
+    this.renewals.set(renewalKey, task);
+    void task.finally(() => this.renewals.delete(renewalKey)).catch(() => {});
     return task;
   }
   private async persist(backend: string, session: MachineSession): Promise<void> {
@@ -206,22 +221,82 @@ export class MachineSessionService implements SessionService {
     };
   }
   async request<T>(input: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe = method === 'GET', options?: { timeoutMs?: number }): Promise<T> {
+    return this.accountRequest(input, method, apiPath, body, retrySafe, options);
+  }
+  private accountChanged(): ToolingError {
+    return new AccountChangedError();
+  }
+  private recordAccount(backend: string, session: MachineSession, profile: any, expectedAccount: string): void {
+    const username = profile?.user?.username || profile?.username;
+    if (username !== expectedAccount) {
+      this.verifiedAccounts.delete(JSON.stringify([backend, session.access]));
+      throw this.accountChanged();
+    }
+    if (this.verifiedAccounts.size >= 32) this.verifiedAccounts.delete(this.verifiedAccounts.keys().next().value!);
+    this.verifiedAccounts.set(JSON.stringify([backend, session.access]), username);
+  }
+  private async verifyAccount(backend: string, session: MachineSession, expectedAccount: string): Promise<void> {
+    if (this.verifiedAccounts.get(JSON.stringify([backend, session.access])) === expectedAccount) return;
+    this.recordAccount(backend, session, await this.http(backend, 'GET', '/api/v1/users/me/', undefined, session.access), expectedAccount);
+  }
+  /** The same selected credential is verified and used. A 401 retry must verify its new credential too. */
+  async withAccount(input: string, expectedAccount: string): Promise<SessionService & { sanitize(text: string): string }> {
+    const backend = requireBackend(input);
+    validateExpectedAccount(expectedAccount);
+    const target = (value: string) => { if (requireBackend(value) !== backend) throw new ToolingError('BACKEND_MISMATCH', 'The request belongs to another backend.'); };
+    const unsupported = async (): Promise<never> => { throw new ToolingError('UNSUPPORTED_ACTION', 'Account-bound operations cannot change authentication.'); };
+    const scoped: SessionService & { sanitize(text: string): string } = {
+      request: (value, method, apiPath, body, retrySafe = method === 'GET', options) => {
+        target(value); return this.accountRequest(backend, method, apiPath, body, retrySafe, options, expectedAccount);
+      },
+      status: async value => {
+        target(value);
+        await this.accountRequest(backend, 'GET', '/api/v1/users/me/', undefined, true, undefined, expectedAccount);
+        const current = await this.selected(backend);
+        await this.verifyAccount(backend, current.session, expectedAccount);
+        const status = await this.status(backend);
+        if (!status.authenticated) throw this.accountChanged();
+        return { ...status, username: expectedAccount, checked: true };
+      },
+      login: unsupported, logout: unsupported, refresh: unsupported,
+      sanitize: text => this.sanitize(text),
+    };
+    await scoped.status(backend, true);
+    return scoped;
+  }
+  private async accountRequest<T>(input: string, method: 'GET' | 'POST', apiPath: string, body: unknown, retrySafe: boolean, options?: { timeoutMs?: number }, expectedAccount?: string): Promise<T> {
     if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 300000)) throw new ToolingError('INVALID_REQUEST', 'Request timeout must be between 1 and 300000 milliseconds.');
     const backend = requireBackend(input);
     let { session, source } = await this.selected(backend);
     if (!session.access || (expiry(session.access) && Date.parse(expiry(session.access)!) <= Date.now() + 30_000)) {
-      if (source === 'machine') session = await this.renew(backend);
+      if (source === 'machine') session = await this.renew(backend, expectedAccount);
       else if (!session.access) throw new ToolingError('NOT_AUTHENTICATED', 'The explicit environment has no access token.');
     }
-    try { return await this.http<T>(backend, method, apiPath, body, session.access, options?.timeoutMs); }
+    const send = async (selected: MachineSession): Promise<T> => {
+      const checkSelected = async () => {
+        if (expectedAccount === undefined) return;
+        const current = await this.selected(backend);
+        if (current.source !== source || current.session.access !== selected.access || current.session.refresh !== selected.refresh) throw this.accountChanged();
+      };
+      if (expectedAccount !== undefined && apiPath !== '/api/v1/users/me/') await this.verifyAccount(backend, selected, expectedAccount);
+      await checkSelected();
+      const value = await this.http<T>(backend, method, apiPath, body, selected.access, options?.timeoutMs);
+      if (expectedAccount !== undefined && apiPath === '/api/v1/users/me/') this.recordAccount(backend, selected, value, expectedAccount);
+      await checkSelected();
+      return value;
+    };
+    try { return await send(session); }
     catch (error) {
       if (!(error instanceof ToolingError) || error.code !== 'AUTH_REJECTED') throw error;
+      // Scope failures are not expired-token failures and must never trigger a replay.
+      if (error instanceof AccountChangedError) throw error;
       if (source === 'environment') throw refusedCredentials('environment', backend, session.access);
       if (!retrySafe) throw error;
       const latest = await this.saved(backend);
-      const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend);
-      try { return await this.http<T>(backend, method, apiPath, body, retry.access, options?.timeoutMs); }
+      const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend, expectedAccount);
+      try { return await send(retry); }
       catch (retryError) {
+        if (retryError instanceof AccountChangedError) throw retryError;
         if (retryError instanceof ToolingError && retryError.code === 'AUTH_REJECTED') throw refusedCredentials('machine', backend, retry.refresh || retry.access);
         throw retryError;
       }

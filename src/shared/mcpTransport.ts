@@ -1,4 +1,5 @@
 import { ToolingError } from './models';
+import type { McpTool } from './discoveryTypes';
 
 /** The platform's stateless Streamable HTTP profile; no legacy SSE endpoint. */
 export class McpTransport {
@@ -31,17 +32,26 @@ export class McpTransport {
     return response.result;
   }
 
-  async tools(): Promise<any[]> {
-    const tools: any[] = [], cursors = new Set<string>(), names = new Set<string>();
+  async tools(): Promise<McpTool[]> {
+    const tools: McpTool[] = [], cursors = new Set<string>(), names = new Set<string>();
     let cursor: string | undefined;
     do {
       const page = await this.request('tools/list', cursor ? { cursor } : {});
       if (!Array.isArray(page?.tools)) throw new ToolingError('API_ERROR', 'The MCP tool catalog is invalid.');
       for (const tool of page.tools) {
-        if (!tool || typeof tool.name !== 'string' || !tool.name || !tool.inputSchema || typeof tool.inputSchema !== 'object' || names.has(tool.name)) {
+        if (!tool || typeof tool.name !== 'string' || !tool.name || !tool.inputSchema || typeof tool.inputSchema !== 'object' || Array.isArray(tool.inputSchema) || names.has(tool.name)) {
           throw new ToolingError('API_ERROR', 'The MCP tool catalog contains an invalid or duplicate tool.');
         }
-        names.add(tool.name); tools.push(tool);
+        const normalized = { ...tool };
+        if (typeof normalized.description !== 'string') delete normalized.description;
+        for (const field of ['annotations', '_meta']) if (!normalized[field] || typeof normalized[field] !== 'object' || Array.isArray(normalized[field])) delete normalized[field];
+        if (normalized.annotations) {
+          normalized.annotations = { ...normalized.annotations };
+          for (const flag of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
+            if (typeof normalized.annotations[flag] !== 'boolean') delete normalized.annotations[flag];
+          }
+        }
+        names.add(tool.name); tools.push(normalized);
       }
       cursor = page.nextCursor;
       if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursors.has(cursor))) {

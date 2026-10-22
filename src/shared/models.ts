@@ -49,13 +49,13 @@ export type ProjectContext = {
   commit: string;
   gitCommonDir: string;
 };
-export type ActionResult = {
+export type ActionResult<T = unknown> = {
   schemaVersion: 1;
   action: string;
   status: 'success' | 'failure' | 'cancelled';
   summary: string;
   error?: { code: ErrorCode; message: string };
-  data?: unknown;
+  data?: T;
   effects?: { state: 'partial-or-uncertain'; message: string };
 };
 export type ProcessSpec = { executable: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number };
@@ -75,6 +75,8 @@ export interface SessionService {
   refresh(backend: string): Promise<SessionStatus>;
   logout(backend: string): Promise<{ revoked: boolean }>;
   request<T>(backend: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe?: boolean, options?: { timeoutMs?: number }): Promise<T>;
+  /** Optional for legacy custom transports. Scoped operations fail closed if unavailable. */
+  withAccount?(backend: string, expectedAccount: string): Promise<SessionService>;
 }
 
 /** Trusted host persistence only. Credentials never cross the action-result boundary. */
