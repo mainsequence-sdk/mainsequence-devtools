@@ -2,12 +2,13 @@ import { SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { codeRepositoryBranchFromResponse, CodeRepositoryBranch } from './repositoryModels';
 import { RepositoryClient } from './repositoryClient';
+import { listEnvironments } from './environments';
 
 export type OrganizationProject = { uid: string; organization_environment_uid: string; name: string; description: string; code_repository_branch_uids: string[] };
 export type OrganizationProjectBranch = CodeRepositoryBranch & { organization_environment_uid: string; code_repository_type: string };
 export type OrganizationProjectPage = { results: OrganizationProject[]; count: number; limit: number; offset: number };
 export type OrganizationEnvironment = { uid: string; name: string };
-export type OrganizationProjectRequest = { backend?: string } & (
+export type OrganizationProjectRequest = { backend?: string; expectedAccount?: string } & (
   | { action: 'organization-environments' }
   | { action: 'organization-projects'; environmentUid: string; search?: string; limit?: number; offset?: number }
   | { action: 'organization-project'; environmentUid: string; projectUid: string }
@@ -51,15 +52,7 @@ export class OrganizationProjectClient {
   constructor(private readonly session: Pick<SessionService, 'request'>, backend: string, private readonly signal?: AbortSignal) { this.backend = requireBackend(backend); }
   private async get(apiPath: string): Promise<unknown> { this.signal?.throwIfAborted(); return this.session.request(this.backend, 'GET', apiPath); }
   async environments(): Promise<OrganizationEnvironment[]> {
-    const items: OrganizationEnvironment[] = [];
-    for (let offset = 0; ; ) {
-      const payload = pageValues(await this.get(`/api/v1/organization-environments/?limit=100&offset=${offset}`));
-      const rows = payload.results.map(row => ({ uid: projectUid(object(row).uid), name: line(row.name, 'environment name') }));
-      if (rows.some(row => items.some(item => item.uid === row.uid))) throw new ToolingError('API_ERROR', 'Environment pagination returned duplicate rows.');
-      items.push(...rows); offset += rows.length;
-      if (offset >= payload.count) return items;
-      if (!rows.length) throw new ToolingError('API_ERROR', 'Environment pagination stopped before completion.');
-    }
+    return (await listEnvironments(this.session, this.backend, this.signal)).map(({ uid, name }) => ({ uid, name }));
   }
   async list(environment: string, options: { search?: string; limit?: number; offset?: number } = {}): Promise<OrganizationProjectPage> {
     const environmentUid = projectUid(environment, 'Environment UID'), limit = options.limit ?? 25, offset = options.offset ?? 0;

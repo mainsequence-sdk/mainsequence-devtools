@@ -6,11 +6,14 @@ import { listRepositories, projectContext, resolveBackend, resolveRepository } f
 import { DRY_RUN_ACTIONS, projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
 import { OrganizationProjectClient, OrganizationProjectRequest } from './organizationProjects';
 import { setupOrganizationProject } from './organizationProjectWorkspace';
+import { bindSessionAccount } from './accountScope';
+import type { ActionData } from './discoveryTypes';
 
 export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string }) {
   const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, ...sessionOptions } = options;
   const session = suppliedSession ?? new MachineSessionService(host, sessionOptions);
   const env = { ...(options.env ?? process.env) };
+  function dispatch<R extends ActionRequest>(request: R): Promise<ActionResult<ActionData<R>>>;
   async function dispatch(request: ActionRequest): Promise<ActionResult> {
     const state = { mutationStarted: false };
     const action = request?.action || 'unknown';
@@ -20,17 +23,20 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
       if (action.startsWith('organization-')) {
         const input = request as OrganizationProjectRequest;
         const backend = await resolveBackend(request.backend, undefined, env);
-        const client = new OrganizationProjectClient(session, backend, options.signal);
+        const scoped = await bindSessionAccount(session, backend, input.expectedAccount);
+        const client = new OrganizationProjectClient(scoped, backend, options.signal);
         let data: unknown;
         if (input.action === 'organization-environments') data = await client.environments();
         else if (input.action === 'organization-projects') data = await client.list(input.environmentUid, input);
         else if (input.action === 'organization-project') data = await client.getProject(input.environmentUid, input.projectUid);
         else if (input.action === 'organization-project-link') {
           const url = await client.link(input);
+          if (input.expectedAccount !== undefined) await scoped.status(backend, true);
           if (!await host.openBrowser(url)) throw new ToolingError('BROWSER_FAILED', 'The resource link could not open.');
           data = { url };
-        } else if (input.action === 'organization-project-setup') data = await setupOrganizationProject({ ...input, backend }, { host, session, env, signal: options.signal, state });
+        } else if (input.action === 'organization-project-setup') data = await setupOrganizationProject({ ...input, backend }, { host, session: scoped, env, signal: options.signal, state });
         else throw new ToolingError('INVALID_REQUEST', 'Unknown organization project action.');
+        if (input.expectedAccount !== undefined) await scoped.status(backend, true);
         return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Claude must attach them when its workspace session starts.' : 'Projects loaded.', data });
       }
       if (isAgentAction(action)) {
@@ -39,7 +45,9 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
       }
       if (action.startsWith('mcp-')) {
         const backend = await resolveBackend(request.backend, process.cwd(), env);
-        return safeResult(await new McpConnections(session, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs }).dispatch(request as McpRequest, backend));
+        const input = request as McpRequest, scoped = await bindSessionAccount(session, backend, input.expectedAccount);
+        return safeResult(await new McpConnections(scoped, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs,
+          checkAccount: input.expectedAccount === undefined ? undefined : () => scoped.status(backend, true).then(() => {}) }).dispatch(input, backend));
       }
       let data: unknown;
       if (['login', 'logout', 'refresh-token', 'auth-status', 'repositories'].includes(action)) {

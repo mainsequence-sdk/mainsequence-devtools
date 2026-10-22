@@ -6,21 +6,19 @@ import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport, sendProjectMcp } from './mcpTransport';
 import { codeRepositoryBranchFromResponse } from './repositoryModels';
+import { listEnvironments } from './environments';
+import type { McpConnection, McpDiscoveryPage } from './discoveryTypes';
 
-export type McpRequest = { backend?: string; environmentUid?: string } & (
-  | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number }
-  | { action: 'mcp-list' }
+export type McpRequest = { backend?: string; environmentUid?: string; expectedAccount?: string } & (
+  | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number; enrichNames?: boolean }
+  | { action: 'mcp-list'; readOnly?: boolean }
   | { action: 'mcp-environments' }
   | { action: 'mcp-add' | 'mcp-remove' | 'mcp-tools'; releaseUid: string }
   | { action: 'mcp-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
 );
 /** `name` is the release's own name, `display_name` its repository's name; both are
  * resolved when a connection is added and stored with it, so listing needs no lookup. */
-type Connection = {
-  backend: string; resource_release_uid: string; name?: string; display_name?: string; code_repository_branch_uid?: string;
-  mcp_connection: { url: string; transport: 'streamable-http'; resource_metadata_url: string;
-    organization_environment_uid: string; organization_environment_name?: string; active_revision_uid: string };
-};
+type Connection = McpConnection;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function uuid(value: unknown): string {
@@ -74,7 +72,7 @@ export class McpConnections {
   private readonly file: string;
   private readonly secrets = new Set<string>();
   constructor(private readonly session: SessionService & { sanitize?(text: string): string }, private readonly options: {
-    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number;
+    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number; checkAccount?: () => Promise<void>;
   } = {}) { this.file = options.connectionsPath ?? storagePath(options.env ?? process.env); }
 
   private sanitize(value: any): any {
@@ -100,6 +98,7 @@ export class McpConnections {
   }
   private async update(change: (rows: Connection[]) => Connection[]): Promise<void> {
     this.options.signal?.throwIfAborted();
+    await this.options.checkAccount?.();
     await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const lock = this.file + '.lock', temporary = this.file + '.' + randomUUID() + '.tmp';
     let handle;
@@ -137,7 +136,12 @@ export class McpConnections {
     if (new URL(endpoint(grant.rpc_url)).origin !== new URL(value.mcp_connection.url).origin) {
       throw new ToolingError('API_ERROR', 'The release credential targets a different endpoint.');
     }
-    const client = new McpTransport(message => sendProjectMcp(value.mcp_connection.url, grant.token, message, this.options));
+    const client = new McpTransport(async message => {
+      await this.options.checkAccount?.();
+      const result = await sendProjectMcp(value.mcp_connection.url, grant.token, message, this.options);
+      await this.options.checkAccount?.();
+      return result;
+    });
     await client.initialize();
     return client;
   }
@@ -165,6 +169,29 @@ export class McpConnections {
   }
   private labelled(value: Connection, found: Labels): Connection {
     return connection(value.backend, { ...value, ...found });
+  }
+  /** Optional discovery labels, deduplicated by branch. Never writes connection metadata. */
+  private async discoveryNames(rows: Connection[]): Promise<Connection[]> {
+    const pending = [...new Set(rows.filter(row => !row.display_name).flatMap(row => row.code_repository_branch_uid ? [row.code_repository_branch_uid] : []))];
+    const names = new Map<string, string>();
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (pending.length) {
+        this.options.signal?.throwIfAborted();
+        const uid = pending.shift()!;
+        try {
+          const raw = await this.session.request(rows[0].backend, 'GET', '/api/v1/code-repository-branches/' + uid + '/');
+          const branch = codeRepositoryBranchFromResponse(raw, 'CodeRepositoryBranch response');
+          if (branch.uid.toLowerCase() === uid) names.set(uid, branch.code_repository_name);
+        } catch (error) {
+          this.options.signal?.throwIfAborted();
+          if (error instanceof ToolingError && error.code === 'CANCELLED') throw error;
+          await this.options.checkAccount?.();
+          // Unavailable optional names must not hide usable endpoints.
+        }
+      }
+    }));
+    return rows.map(row => !row.display_name && row.code_repository_branch_uid && names.has(row.code_repository_branch_uid)
+      ? this.labelled(row, { display_name: names.get(row.code_repository_branch_uid) }) : row);
   }
   /** Records saved before labels were stored are completed once, when the backend answers. */
   private async backfill(rows: Connection[]): Promise<Connection[]> {
@@ -195,6 +222,10 @@ export class McpConnections {
     try {
       const backend = requireBackend(inputBackend);
       this.options.signal?.throwIfAborted();
+      if (request.action === 'mcp-list' && request.readOnly !== undefined && typeof request.readOnly !== 'boolean'
+        || request.action === 'mcp-discover' && request.enrichNames !== undefined && typeof request.enrichNames !== 'boolean') {
+        throw new ToolingError('INVALID_REQUEST', 'Discovery and listing options must be booleans.');
+      }
       const environmentUid = request.environmentUid === undefined ? undefined : uuid(request.environmentUid);
       const belongs = (value: Connection) => !environmentUid || value.mcp_connection.organization_environment_uid === environmentUid;
       const requireEnvironment = (value: Connection) => {
@@ -202,24 +233,8 @@ export class McpConnections {
       };
       let data: unknown, summary: string;
       if (request.action === 'mcp-environments') {
-        const environments = new Map<string, { uid: string; name: string; isProduction: boolean }>();
-        for (let offset = 0; ; offset += 100) {
-          this.options.signal?.throwIfAborted();
-          if (offset >= 10000) throw new ToolingError('API_ERROR', 'The environment list is too large.');
-          const page = await this.session.request<any>(backend, 'GET', `/api/v1/organization-environments/?limit=100&offset=${offset}`);
-          const items = Array.isArray(page) ? page : page?.results;
-          if (!Array.isArray(items)) throw new ToolingError('API_ERROR', 'The backend returned an invalid environment list.');
-          for (const row of items) {
-            if (typeof row?.name !== 'string' || !row.name.trim()) throw new ToolingError('API_ERROR', 'An organization environment has no name.');
-            const uid = uuid(row.uid);
-            environments.set(uid, { uid, name: row.name.trim(), isProduction: row.is_production === true });
-          }
-          if (Array.isArray(page)) break;
-          if (!Number.isInteger(page.count) || page.count < 0) throw new ToolingError('API_ERROR', 'The environment pagination is invalid.');
-          if (offset + 100 >= page.count) break;
-          if (!items.length) throw new ToolingError('API_ERROR', 'The environment directory changed; refresh it.');
-        }
-        data = [...environments.values()]; summary = 'Organization environments available to your MainSequence account.';
+        data = await listEnvironments(this.session, backend, this.options.signal);
+        summary = 'Organization environments available to your MainSequence account.';
       } else if (request.action === 'mcp-discover') {
         if ((request.search !== undefined && typeof request.search !== 'string')
           || (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 100))
@@ -251,9 +266,14 @@ export class McpConnections {
           const values = [...matching.values()], offset = request.offset ?? 0;
           data = { count: values.length, results: values.slice(offset, offset + (request.limit ?? 100)) };
         }
+        if (request.enrichNames) {
+          const page = data as McpDiscoveryPage;
+          data = { ...page, results: await this.discoveryNames(page.results) };
+        }
         summary = 'Available project MCP endpoints; discovery does not save a connection.';
       } else if (request.action === 'mcp-list') {
-        data = await this.backfill((await this.read()).filter(row => row.backend === backend && belongs(row)));
+        const saved = (await this.read()).filter(row => row.backend === backend && belongs(row));
+        data = request.readOnly ? saved : await this.backfill(saved);
         summary = 'Saved MCP connections for this backend. Availability is checked when used.';
       } else {
         const releaseUid = uuid(request.releaseUid);
@@ -292,6 +312,7 @@ export class McpConnections {
           } else throw new ToolingError('INVALID_REQUEST', 'Unknown MCP action.');
         }
       }
+      await this.options.checkAccount?.();
       return this.sanitize({ schemaVersion: 1, action: request.action, status: 'success', summary, data });
     } catch (error) {
       const failure = this.options.signal?.aborted ? new ToolingError('CANCELLED', 'The MCP action was cancelled.')

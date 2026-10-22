@@ -35,6 +35,47 @@ The machine record is the SDKs' existing `MainSequenceCLI.auth` service, backend
 
 The `mcp-discover`, `mcp-add`, `mcp-list`, `mcp-remove`, `mcp-tools` and `mcp-call` actions discover the platform's MCP directory, remember a selected release and invoke its tools through a local MCP client, using the existing developer session and short-lived release credentials. They are available from `ms-devtools` and from `createDevTools().dispatch()`; hosts may inject `mcpConnectionsPath`. Since 0.3.1, `mcp-add` reads the release's name, its repository's name and its repository branch from the release directory and stores them with the connection as `name`, `display_name` and `code_repository_branch_uid`, so `mcp-list` labels a saved connection without a backend request; a record saved by an earlier version is completed by the first listing that can read them, and a label that cannot be read is left out rather than making the MCP unavailable. Discovery rows carry `name` and `code_repository_branch_uid` as the platform directory reports them. The conversational `mainsequence-mcp` skill that lets Codex use them without `/ms` ships with the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin), together with [its user guide](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/conversational-mcp.md) and [ADR 0002](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/adr/0002-conversational-project-mcp-client.md).
 
+## Shared discovery API (0.3.2)
+
+`createDevTools().dispatch()` now infers typed payloads for session status, environments,
+agent directories, MCP discovery, saved connections and tool catalogs. `ActionResult<T>`
+defaults to `unknown` for compatibility; the public exports include `McpConnection`,
+`McpTool`, `McpCatalog`, `McpDiscoveryPage`, `AgentDirectory` and `DiscoveryResultMap`.
+Backend response validation stays in devtools; host applications own their view state.
+
+```ts
+const verified = await devtools.dispatch({ action: 'auth-status', backend, check: true });
+if (verified.status !== 'success' || !verified.data?.username) throw new Error('Sign in first');
+const scope = { backend, expectedAccount: verified.data.username, environmentUid };
+const saved = await devtools.dispatch({ action: 'mcp-list', ...scope, readOnly: true });
+const available = await devtools.dispatch({ action: 'mcp-discover', ...scope, enrichNames: true, limit: 20 });
+```
+
+- `mcp-list` with `readOnly: true` reads saved metadata without label lookups, locks or
+  connection-file writes. Missing stores remain absent; corrupt files are preserved and
+  reported. Omit the option (or explicitly use `false`) to retain the legacy label-backfill
+  behavior. Normal authentication renewal is independent of connection metadata writes.
+- `mcp-discover` with `enrichNames: true` resolves optional repository names once per branch,
+  with at most four concurrent lookups and no connection writes. Missing optional metadata
+  leaves usable endpoints visible. Cancellation and account changes still fail the action.
+- `mcp-environments` and `organization-environments` use the same bounded `listEnvironments`
+  loader. Short pages advance by their actual length; duplicate rows, changing totals,
+  premature empty pages and directories over 10,000 entries are refused. The existing MCP
+  result retains `isProduction`; the Projects result retains `{uid, name}`.
+- MCP and organization-project actions accept optional `expectedAccount`. The built-in
+  session verifies the actual credential used for requests and retries, rejects a different
+  account and discards responses when the selected credentials change during a read. Agent
+  operations also use this binding when the session supports it. This does not make remote
+  mutations atomic with account changes or roll back work already dispatched.
+
+`bindSessionAccount(session, backend, expectedAccount)` is available for public domain
+clients. Custom `SessionService` implementations can implement the optional `withAccount`
+method to provide that contract. New opt-in MCP/Projects account checks fail with
+`UNSUPPORTED_ACTION` when the custom transport lacks it; existing unscoped callers and
+legacy custom agent transports retain their prior behavior. The built-in scoped session
+cannot log in, log out or change authentication. Hosts still invalidate stale selections
+when their configured backend/environment changes.
+
 ## Project actions
 
 Backend selection uses an explicit `--backend`, process `MAINSEQUENCE_ENDPOINT`, the Git-root `.env` endpoint, existing CLI configuration, then the standard backend. Project selection validates the real Git root, attached branch, full HEAD SHA, and canonical remote identity. Ambiguous Python/frontend projects require `--type python` or `--type vite_react`.

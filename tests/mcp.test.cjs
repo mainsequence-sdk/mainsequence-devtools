@@ -405,3 +405,44 @@ test('plain HTTP off-loopback, URL credentials and endpoint query strings are re
   assert.equal(f.state.exchanged, 0);
   assert.equal((await f.dispatch('mcp-list')).data.length, 0);
 });
+
+test('read-only saved listing preserves legacy bytes without label requests, locks or connection changes', async t => {
+  const f = await fixture(t);
+  const legacy = { ...f.row(), backend: f.backend, resource_release_uid: f.uid };
+  delete legacy.name; delete legacy.uid;
+  const foreign = { ...legacy, backend: 'https://elsewhere.test' };
+  const bytes = JSON.stringify([legacy, foreign], null, 4) + '\n\n';
+  await fs.writeFile(f.file, bytes); await fs.writeFile(f.file + '.lock', 'other process');
+  const before = f.calls.length;
+  const result = await f.dispatch('mcp-list', { readOnly: true, environmentUid: legacy.mcp_connection.organization_environment_uid });
+  assert.equal(result.status, 'success'); assert.equal(result.data.length, 1); assert.equal(result.data[0].name, undefined);
+  assert.equal(f.calls.length, before); assert.equal(await fs.readFile(f.file, 'utf8'), bytes);
+  assert.equal(await fs.readFile(f.file + '.lock', 'utf8'), 'other process');
+  assert.equal((await f.dispatch('mcp-list', { readOnly: 'yes' })).error.code, 'INVALID_REQUEST');
+  assert.equal((await f.dispatch('mcp-list', { readOnly: true, environmentUid: f.secondUid })).data.length, 0);
+});
+
+test('read-only saved listing retains corrupt files and does not create missing stores', async t => {
+  const f = await fixture(t);
+  assert.deepEqual((await f.dispatch('mcp-list', { readOnly: true })).data, []);
+  await assert.rejects(fs.stat(f.file), { code: 'ENOENT' });
+  await fs.writeFile(f.file, '{corrupt');
+  const result = await f.dispatch('mcp-list', { readOnly: true });
+  assert.equal(result.error.code, 'STORE_ERROR'); assert.equal(await fs.readFile(f.file, 'utf8'), '{corrupt');
+  assert.deepEqual(f.calls, []);
+});
+
+test('optional discovery enrichment resolves shared branches once, preserves names, and never saves connections', async t => {
+  const f = await fixture(t);
+  const plain = await f.dispatch('mcp-discover');
+  assert.equal(plain.data.results[0].display_name, undefined);
+  const enriched = await f.dispatch('mcp-discover', { enrichNames: true });
+  assert.equal(enriched.status, 'success'); assert.ok(enriched.data.results.every(row => row.display_name === 'MetaTablesApi' && row.name === 'metatable-mcp'));
+  assert.equal(f.calls.filter(c => c.path === '/api/v1/code-repository-branches/' + f.branchUid + '/').length, 1);
+  await assert.rejects(fs.stat(f.file), { code: 'ENOENT' });
+  f.state.branchDenied = true;
+  const unavailable = await f.dispatch('mcp-discover', { enrichNames: true });
+  assert.equal(unavailable.status, 'success'); assert.equal(unavailable.data.count, 2); assert.equal(unavailable.data.results[0].display_name, undefined);
+  assert.equal((await f.dispatch('mcp-discover', { enrichNames: 'yes' })).error.code, 'INVALID_REQUEST');
+  assert.equal(f.state.invoked, 0); assert.equal(f.state.exchanged, 0);
+});

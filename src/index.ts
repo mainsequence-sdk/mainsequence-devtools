@@ -24,6 +24,10 @@ export { pythonExecutable, hasPythonProject, projectVersion, readPythonSdkStatus
 export type { CaptureProcess } from './shared/pythonProjectStatus';
 
 export type { McpRequest } from './shared/mcp';
+export type { ActionData, DiscoveryResultMap, AgentDirectory, McpConnection, McpDiscoveryPage, McpCatalog, McpTool } from './shared/discoveryTypes';
+export { listEnvironments } from './shared/environments';
+export type { EnvironmentSummary } from './shared/environments';
+export { bindSessionAccount } from './shared/accountScope';
 export { AgentClient } from './shared/agents';
 export type { AgentRequest, PlatformAgent } from './shared/agents';
 

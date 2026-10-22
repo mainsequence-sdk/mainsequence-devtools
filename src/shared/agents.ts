@@ -59,11 +59,15 @@ export class AgentClient {
       if (['agent-session', 'agent-readiness', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
         throw new ToolingError('INVALID_REQUEST', 'Agent conversations must be bound to the account returned by discovery.');
       }
+      // The built-in session binds every request/retry to the selected account. Legacy
+      // custom agent transports retain their existing account-check contract.
+      const session = input.expectedAccount !== undefined && this.session.withAccount
+        ? await this.session.withAccount(backend, input.expectedAccount) : this.session;
       const timeouts = new Map<string, number>();
       const client = new McpTransport(message => {
         const remaining = readinessDeadline === undefined ? undefined : Math.ceil(readinessDeadline - performance.now());
         if (remaining !== undefined && remaining <= 0) throw new ToolingError('PROCESS_TIMEOUT', 'The agent did not become ready in time. No message was sent. Try again.');
-        return this.session.request(backend, 'POST', '/mcp', message,
+        return session.request(backend, 'POST', '/mcp', message,
         message.method !== 'tools/call' || !['a2a.send_message', 'a2a.cancel_task'].includes((message.params as any)?.name),
         remaining !== undefined ? { timeoutMs: Math.min(30000, remaining) }
           : message.method === 'tools/call' && timeouts.has((message.params as any)?.name) ? { timeoutMs: timeouts.get((message.params as any).name) } : undefined);
