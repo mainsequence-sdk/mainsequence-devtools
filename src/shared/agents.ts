@@ -53,7 +53,9 @@ export class AgentClient {
       const backend = requireBackend(selectedBackend), environmentUid = uuid(input.environmentUid);
       this.options.signal?.throwIfAborted();
       if (!isAgentAction(input.action)) throw new ToolingError('INVALID_REQUEST', 'Unknown agent action.');
-      const identity = await this.session.status(backend, true);
+      // Sign-in saved the account with the session; asking the backend again costs a round trip on every action.
+      let identity = await this.session.status(backend);
+      if (identity.authenticated && !identity.username) identity = await this.session.status(backend, true);
       if (!identity.authenticated || !identity.username) throw new ToolingError('NOT_AUTHENTICATED', 'Sign in to MainSequence to use agents.');
       if (input.expectedAccount !== undefined && input.expectedAccount !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed. Refresh agents and start a new conversation.');
       if (['agent-session', 'agent-readiness', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(input.action) && !input.expectedAccount) {
@@ -125,7 +127,7 @@ export class AgentClient {
             await waitForAgentReadiness({ signal: this.options.signal, progress: this.options.progress, timeoutMs,
               resolve: async deadline => {
                 readinessDeadline = deadline;
-                const account = await this.session.status(backend, true);
+                const account = await this.session.status(backend);
                 if (!account.authenticated || account.username !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed while checking the agent. Choose the agent again.');
                 return call('agent_session.resolve_runtime_access', { agent_session_uid: sessionUid });
               } });

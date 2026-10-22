@@ -56,6 +56,8 @@ export class MachineSessionService implements SessionService {
   private readonly store: CredentialStore | null;
   private readonly env: NodeJS.ProcessEnv;
   private readonly renewals = new Map<string, Promise<MachineSession>>();
+  /** Each store read runs two Keychain programs, so one process reads a backend's session once. */
+  private readonly cached = new Map<string, MachineSession | null>();
   private readonly secrets = new Set<string>();
   constructor(private readonly host: HostServices, private readonly options: {
     store?: CredentialStore | null;
@@ -93,16 +95,26 @@ export class MachineSessionService implements SessionService {
     if (!this.store) throw new ToolingError('STORE_UNAVAILABLE', 'A machine credential store is required: macOS Keychain or Linux Secret Service with secret-tool.');
     return this.store;
   }
-  private async saved(backend: string): Promise<MachineSession | null> {
+  private async saved(backend: string, fresh = false): Promise<MachineSession | null> {
+    if (!fresh && this.cached.has(backend)) return this.cached.get(backend)!;
     try {
       const value = this.options.persistence ? await this.options.persistence.read(backend) : readSession(this.requireStore(), backend);
-      return value ? this.remember(value) : null;
+      const session = value ? this.remember(value) : null;
+      this.cached.set(backend, session);
+      return session;
     } catch (error) {
       if (error instanceof ToolingError) throw error;
       throw new ToolingError('STORE_ERROR', error instanceof ForeignEntryError
         ? 'The saved entry belongs to an older tool. Sign in to replace it.'
         : 'The machine session could not be read. Check that the credential store is unlocked and available.');
     }
+  }
+  /** Another process may have rotated the pair since this one read it, but never switches the account under it. */
+  private async reread(backend: string): Promise<MachineSession | null> {
+    const known = this.cached.get(backend)?.username;
+    const latest = await this.saved(backend, true);
+    if (known && latest?.username && latest.username !== known) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed in another process. Run the action again.');
+    return latest;
   }
   private environment(backend: string): MachineSession | null {
     if (this.env.MAINSEQUENCE_RUNTIME_CREDENTIAL_ID || this.env.MAINSEQUENCE_RUNTIME_CREDENTIAL_SECRET) {
@@ -154,7 +166,7 @@ export class MachineSessionService implements SessionService {
     if (running) return running;
     const task = (async () => {
       // Bypass cached state: another SDK process may have rotated the refresh token.
-      const previous = await this.saved(backend);
+      const previous = await this.reread(backend);
       if (!previous?.refresh) throw new ToolingError('NOT_AUTHENTICATED', 'No refreshable machine session is saved for this backend.');
       let data: unknown;
       try { data = await this.http(backend, 'POST', '/auth/jwt-token/token/refresh/', { refresh: previous.refresh }); }
@@ -174,7 +186,7 @@ export class MachineSessionService implements SessionService {
     try {
       if (this.options.persistence) await this.options.persistence.write(backend, session);
       else saveSession(this.requireStore(), backend, session);
-      const saved = await this.saved(backend);
+      const saved = await this.saved(backend, true);
       if (!saved || saved.access !== session.access || saved.refresh !== session.refresh) throw new Error('verification failed');
     } catch {
       throw new ToolingError('PERSISTENCE_FAILED', 'Authorization completed but the machine session could not be saved and verified.');
@@ -218,7 +230,7 @@ export class MachineSessionService implements SessionService {
       if (!(error instanceof ToolingError) || error.code !== 'AUTH_REJECTED') throw error;
       if (source === 'environment') throw refusedCredentials('environment', backend, session.access);
       if (!retrySafe) throw error;
-      const latest = await this.saved(backend);
+      const latest = await this.reread(backend);
       const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend);
       try { return await this.http<T>(backend, method, apiPath, body, retry.access, options?.timeoutMs); }
       catch (retryError) {
@@ -246,6 +258,7 @@ export class MachineSessionService implements SessionService {
     if (this.options.signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
     try { if (this.options.persistence) await this.options.persistence.remove(backend); else clearSession(this.requireStore(), backend); }
     catch { throw new ToolingError('STORE_ERROR', 'The machine session could not be removed.'); }
+    finally { this.cached.delete(backend); }
     return { revoked };
   }
   async login(input: string): Promise<SessionStatus> {

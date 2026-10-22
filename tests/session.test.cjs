@@ -62,6 +62,22 @@ test('renewal rereads a session written by another SDK and deduplicates concurre
   assert.equal(readSession(store, backend).username, 'shared');
 });
 
+test('one process reads the saved session once and never switches account on a reread', async t => {
+  const { backend, calls } = await fixtureBackend(t);
+  const store = memoryStore(); let reads = 0; const read = store.read; store.read = (...args) => { reads++; return read(...args); };
+  saveSession(store, backend, { username: 'José', access: 'fixture-access-1', refresh: 'fixture-refresh-1' });
+  const service = new MachineSessionService(createNodeHost(), { env: {}, store });
+  assert.equal((await service.status(backend)).username, 'José');
+  for (let i = 0; i < 3; i++) await service.request(backend, 'GET', '/api/v1/code-repositories/');
+  assert.equal(reads, 1);
+  const switched = new MachineSessionService(createNodeHost(), { env: {}, store });
+  saveSession(store, backend, { username: 'José', access: 'stale', refresh: 'fixture-refresh-1' });
+  await switched.status(backend);
+  saveSession(store, backend, { username: 'someone-else', access: 'fixture-access-1', refresh: 'other-refresh' });
+  await assert.rejects(switched.request(backend, 'GET', '/api/v1/code-repositories/'), error => error.code === 'AUTH_REJECTED' && /account changed/.test(error.message));
+  assert.equal(calls.filter(call => call.authorization === 'Bearer fixture-access-1' && call.path === '/api/v1/code-repositories/').length, 3);
+});
+
 test('401 rereads a newer machine access token and does not unnecessarily renew', async t => {
   const fixture = await fixtureBackend(t);
   const store = memoryStore(); saveSession(store, fixture.backend, { username: '', access: 'stale', refresh: 'r' });

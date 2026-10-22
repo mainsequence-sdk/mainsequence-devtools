@@ -10,7 +10,7 @@ const row = () => ({ uid: agentUid, name: 'Analyst', description: 'Analyze risk'
 function fixture(options = {}) {
  const calls = [], state = {account:'person@example.test',row:row(),catalog:['agent.list','agent.search','agent.get','agent.get_or_create_session','agent_session.resolve_runtime_access','a2a.send_message','a2a.get_task','a2a.wait_task','a2a.cancel_task']};
  const task = () => ({agent_uid:agentUid,agent_session_uid:sessionUid,task_uid:taskUid,status:'working',terminal:false,event_cursor:2,outputs:[],cancellation_requested:false});
- const session = {status:async (url,check)=>{assert.equal(url,backend);assert.equal(check,true);return {authenticated:true,username:state.account}},sanitize:s=>s.replaceAll('known-secret','[redacted]'),
+ const session = {status:async (url,check)=>{assert.equal(url,backend);state.checks=(state.checks||0)+(check?1:0);return {authenticated:true,username:check||!state.unsavedUsername?state.account:undefined}},sanitize:s=>s.replaceAll('known-secret','[redacted]'),
  request:async(url,method,path,body,retrySafe,options)=>{
   calls.push({url,method,path,body,retrySafe,options});assert.equal(path,'/mcp');assert.equal(url,backend);
   const reply = result=>({jsonrpc:'2.0',id:body.id,result});
@@ -46,6 +46,11 @@ test('agent discovery sends environment and pagination and projects only public 
  assert.doesNotMatch(JSON.stringify(result),/not-public|never-contact/);assert.equal(result.data.results[0].skills[0].name,'Risk');
  const search=await f.dispatch('agents-list',{search:'exposure'});assert.equal(search.data.semantic,true);assert.equal(search.data.count,1);
  assert.equal(f.calls.find(c=>c.body.params?.name==='agent.search').body.params.arguments.organization_environment_uid,environmentUid);
+});
+test('discovery takes the account saved at sign-in and checks the backend only when none was saved',async()=>{
+ const f=fixture();await f.dispatch('agents-list');await f.dispatch('agents-list',{search:'exposure'});assert.equal(f.state.checks||0,0);
+ const legacy=fixture();legacy.state.unsavedUsername=true;const result=await legacy.dispatch('agents-list');
+ assert.equal(result.data.account,'person@example.test');assert.equal(legacy.state.checks,1);
 });
 test('mixed-environment results are refused instead of displayed',async()=>{
  const f=fixture();f.state.row.organization_environment_uid=id(9);assert.equal((await f.dispatch('agents-list')).status,'failure');
