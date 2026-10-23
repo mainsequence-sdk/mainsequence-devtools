@@ -91,6 +91,12 @@ test('an older platform without messaging reports unsupported capability before 
  const f=fixture();f.state.catalog=f.state.catalog.filter(n=>n!=='a2a.send_message');const result=await f.send();assert.equal(result.error.code,'UNSUPPORTED_ACTION');assert.equal(result.effects,undefined);
 });
 
+test('an explicit durable message ID reaches the transport unchanged and malformed IDs never send',async()=>{
+ const f=fixture(),messageId=id(88);assert.equal((await f.send({messageId})).status,'success');
+ assert.equal(f.calls.find(c=>c.body.params?.name==='a2a.send_message').body.params.arguments.message_id,messageId);
+ const bad=fixture();assert.equal((await bad.send({messageId:'not-an-id'})).status,'failure');assert.equal(bad.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
+});
+
 test('session resolution creates or resumes without messaging, exposes only public identity, and is safely repeatable',async()=>{
  const f=fixture(), selection={agentUid,expectedAccount:'person@example.test',handleId:'claude_host_agent_default'};
  const first=await f.dispatch('agent-session',selection);assert.equal(first.status,'success');assert.equal(first.data.sessionUid,sessionUid);
@@ -182,4 +188,17 @@ test('agent defaults are a read-only allowlisted projection across list, search 
  f.state.row.llm_provider='';delete f.state.row.llm_model;f.state.row.llm_thinking={token:'not-public'};
  assert.deepEqual((await f.dispatch('agents-list')).data.results[0].defaults,{provider:'',model:'',thinking:''});
  assert.equal(f.calls.some(c=>c.body.params?.name==='a2a.send_message'),false);
+});
+
+
+test('list, semantic search and detail opt into inline icons without extra requests',async()=>{
+ for(const [action,extra,tool] of [['agents-list',{},'agent.list'],['agents-list',{search:'risk'},'agent.search'],['agent-get',{agentUid},'agent.get']]) {
+  const f=fixture();f.state.row.command_center_icon={rendering:'color',imageRendering:'pixelated',url:'https://never-fetch.example/icon',idle:{mime:'image/svg+xml',bytes:Buffer.from('<svg/>').toString('base64')}};
+  const out=await f.dispatch(action,{...extra,includeIcons:true});assert.equal(out.status,'success');
+  const selected=action==='agent-get'?out.data.agent:out.data.results[0];assert.match(selected.icon.source,/^data:image/);assert.equal(selected.icon.imageRendering,'pixelated');
+  assert.equal(f.calls.filter(c=>c.body.method==='tools/call').length,1);
+  assert.equal(f.calls.find(c=>c.body.params?.name===tool).body.params.arguments.include_icons,true);
+  assert.doesNotMatch(JSON.stringify(out),/never-fetch/);
+ }
+ const invalid=fixture();assert.equal((await invalid.dispatch('agents-list',{includeIcons:'yes'})).status,'failure');assert.equal(invalid.calls.length,0);
 });

@@ -78,6 +78,47 @@ sixth request argument accepts a per-request `timeoutMs` up to 300,000 milliseco
 Agent replies are external data. Consumers must not treat returned text or card
 descriptions as instructions that override user requests or permission checks.
 
+## Durable host delivery (0.3.3)
+
+`AgentDelivery` is a public, host-independent coordinator. Construct it with
+`createDispatch(signal)` returning the existing `createDevTools(...).dispatch`,
+using the shared machine session. A scope contains `host`, a host-supplied
+`conversationId`, the selected `backend` and verified `account`. Never accept the
+conversation identity or storage directory from an app message or model argument.
+
+`stage(scope, {requestId, environmentUid, agentUid, message})` validates the agent
+and stores immutable content without allocating a session or sending. UUID request
+IDs become `agent-send.messageId`; omitting messageId on the existing action retains
+its previous generated-ID behavior. `submission` records attempted, acknowledged or
+unknown native-queue submission. An acknowledgement is not a delivery receipt.
+
+`deliver` claims the saved request under a cross-process lock, resolves a stable
+host/chat/agent session handle, waits for backend readiness, persists the sending
+marker, and dispatches once. `wait` waits at most 25 seconds by default; `get` and
+`list` return saved status. A caller's AbortSignal stops its wait, while accepted work
+continues under a separate 12-minute deadline. `cancel` applies only before acceptance.
+Repeating delivery returns the existing job or exact receipt; it never replays a send.
+
+State is stored under `MainSequenceCLI/agent-delivery-v1` in the platform application
+data directory, with mode 0700 directories and 0600 atomic files. It contains message
+text, replies and public IDs, not credentials. Files are partitioned by host, chat,
+backend and verified account. Pending messages expire after 24 hours; at 256 requests
+the conversation refuses new requests rather than dropping deduplication history.
+Deleting these files removes recovery history and must not be used to retry a send.
+
+Explicit recovery of failed preparation (including an agent-send preflight failure that proves `a2a.send_message` was never called) with zero dispatch attempts reuses the same request and stable session handle. After process loss, preparation can also resume through that handle. Loss during
+dispatch becomes `uncertain`: the same request and further sends in that agent
+conversation are blocked. The platform currently supplies no authoritative
+direct-message reconciliation receipt. This provides at-most-once client dispatch,
+not a distributed exactly-once guarantee or automatic retry after ambiguous failure.
+Completed receipts survive process restart and can be returned to native chat again.
+Only direct `message` responses are supported by this coordinator; task APIs retain
+their existing independent behavior. Claude's consumer remains unchanged.
+
+The delivery tests cover concurrent processes, Stop before and during send, process
+death, lost outcomes, immutable IDs, account/chat isolation and corrupt/symlinked
+storage. Fixtures use temporary storage and never replace machine credentials.
+
 ## Verification and release
 
 `tests/agents.test.cjs` checks environment/account boundaries, public projection,
@@ -103,3 +144,17 @@ Version 0.2.6 adds readiness preparation and opt-in send-time revalidation for C
 0.4.5. Existing session allocation and other adapter behavior remain unchanged.
 
 Agent list, search and detail results include `defaults: { provider, model, thinking }`, projected only from existing `llm_provider`, `llm_model` and `llm_thinking` fields. Empty or absent fields remain empty strings. These are Agent defaults for new sessions, not a claim about a resumed session’s resolved configuration. Runtime configuration and credential fields are excluded.
+
+
+### Inline agent icons
+
+Desktop hosts request `includeIcons: true` on `agents-list` or `agent-get`.
+Devtools forwards the platform's `include_icons: true` on agent.list,
+agent.search and agent.get. Each projected agent then has an `icon` containing
+bounded inline data and its reduced-motion still image, or null. Remote icon URLs
+are never fetched. Missing/invalid sprites do not trigger fallback HTTP requests.
+The default remains unchanged for callers that do not request icons.
+
+`createAgentAssets` remains a compatibility API using this same inline MCP
+contract. Hosts that already have a directory response should use its icons
+instead of calling the compatibility API and repeating discovery.

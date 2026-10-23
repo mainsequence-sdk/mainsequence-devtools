@@ -1,4 +1,4 @@
-import { McpConnections, McpRequest } from './mcp';
+import { McpConnections, McpRequest, createMcpConnectionCache, type McpConnectionCache } from './mcp';
 import { AgentClient, AgentRequest, isAgentAction } from './agents';
 import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
 import { MachineSessionService } from './session';
@@ -8,9 +8,19 @@ import { OrganizationProjectClient, OrganizationProjectRequest } from './organiz
 import { setupOrganizationProject } from './organizationProjectWorkspace';
 import { bindSessionAccount } from './accountScope';
 import type { ActionData } from './discoveryTypes';
+import { currentDirectory } from './workingDirectory';
+import { createProjectToolCatalog, projectToolResult, type ProjectToolCatalogView, type ProjectToolScope } from './projectTools';
 
-export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string }) {
-  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, ...sessionOptions } = options;
+const UUID = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
+export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & {
+  host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean;
+  mcpConnectionsPath?: string; mcpCache?:McpConnectionCache;
+  /** The HTTP budget of one project MCP request (default 120 s). Backend requests keep `requestTimeoutMs` (default 30 s). */
+  projectRequestTimeoutMs?: number;
+  /** Where `mcp-catalog` keeps the shared project-tool catalog; default beside `mcp-connections.json`. */
+  projectToolCatalogPath?: string;
+}) {
+  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, mcpCache=createMcpConnectionCache(), projectRequestTimeoutMs, projectToolCatalogPath, ...sessionOptions } = options;
   const session = suppliedSession ?? new MachineSessionService(host, sessionOptions);
   const env = { ...(options.env ?? process.env) };
   function dispatch<R extends ActionRequest>(request: R): Promise<ActionResult<ActionData<R>>>;
@@ -37,17 +47,24 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
         } else if (input.action === 'organization-project-setup') data = await setupOrganizationProject({ ...input, backend }, { host, session: scoped, env, signal: options.signal, state });
         else throw new ToolingError('INVALID_REQUEST', 'Unknown organization project action.');
         if (input.expectedAccount !== undefined) await scoped.status(backend, true);
-        return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Claude must attach them when its workspace session starts.' : 'Projects loaded.', data });
+        return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Open the workspace in your editor and grant access to its repositories.' : 'Projects loaded.', data });
       }
       if (isAgentAction(action)) {
         const backend = await resolveBackend(request.backend, undefined, env);
         return safeResult(await new AgentClient(session, { signal: options.signal, progress: host.progress?.bind(host) }).dispatch(request as AgentRequest, backend));
       }
       if (action.startsWith('mcp-')) {
-        const backend = await resolveBackend(request.backend, process.cwd(), env);
-        const input = request as McpRequest, scoped = await bindSessionAccount(session, backend, input.expectedAccount);
-        return safeResult(await new McpConnections(scoped, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs,
-          checkAccount: input.expectedAccount === undefined ? undefined : () => scoped.status(backend, true).then(() => {}) }).dispatch(input, backend));
+        // A host update may remove its old installation directory. An explicit
+        // backend (or environment override) has no dependency on that directory.
+        const directory = request.backend || env.MAINSEQUENCE_ENDPOINT ? undefined : currentDirectory();
+        const backend = await resolveBackend(request.backend, directory, env);
+        if (request.action === 'mcp-catalog') return safeResult(await projectToolCatalogAction(request, backend));
+        if (request.action === 'mcp-tool-call') {
+          // The remote tool's own result in the host-neutral shape (ADR 0004); status, summary, error and effects are the call's.
+          const output = await dispatch({ ...request, action: 'mcp-call' } as McpRequest);
+          return safeResult({ ...output, action, data: projectToolResult(output) });
+        }
+        return safeResult(await new McpConnections(session, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs, projectRequestTimeoutMs, cache:mcpCache }).dispatch(request as McpRequest, backend));
       }
       let data: unknown;
       if (['login', 'logout', 'refresh-token', 'auth-status', 'repositories'].includes(action)) {
@@ -85,6 +102,21 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
       });
     }
   }
+  /** The shared project-tool registry as an action, for a host that prefers actions to imports (ADR 0004).
+   * Without `refresh` it answers from the shared catalog file at once; with it, this process re-reads
+   * the saved connections' catalogs (waiting up to two minutes for another process's refresh to end). */
+  async function projectToolCatalogAction(request: Extract<McpRequest, { action: 'mcp-catalog' }>, backend: string): Promise<ActionResult<ProjectToolCatalogView>> {
+    if (request.refresh !== undefined && typeof request.refresh !== 'boolean' && request.refresh !== 'force') throw new ToolingError('INVALID_REQUEST', 'refresh must be a boolean or "force".');
+    if (request.environmentUid !== undefined && (typeof request.environmentUid !== 'string' || !UUID.test(request.environmentUid))) throw new ToolingError('INVALID_REQUEST', 'The environment must be an organization environment UUID.');
+    const scope: ProjectToolScope = { backend, ...(request.environmentUid ? { environmentUid: request.environmentUid.toLowerCase() } : {}) };
+    const catalog = createProjectToolCatalog({ file: projectToolCatalogPath, env, dispatch: () => dispatch });
+    const refreshed = request.refresh ? await catalog.refresh(request.refresh === 'force', { scope, waitMs: 120_000 }) : false;
+    const data: ProjectToolCatalogView = { backend, ...(scope.environmentUid ? { environmentUid: scope.environmentUid } : {}), file: catalog.file, refreshed, ...catalog.view(scope) };
+    if (request.refresh && data.error) return { schemaVersion: 1, action: 'mcp-catalog', status: 'failure', summary: data.error.message, error: data.error, data };
+    const unavailable = data.unavailable.length ? ` ${data.unavailable.join(', ')} could not be read now${data.retained ? '; earlier tools stay registered' : ''}.` : '';
+    return { schemaVersion: 1, action: 'mcp-catalog', status: 'success', data,
+      summary: `${data.count} project MCP tools from ${data.connections.length} saved connections${refreshed ? ', catalogs re-read' : ', from the shared catalog'}.${unavailable}` };
+  }
   function safeResult(result: ActionResult): ActionResult {
     // The dispatcher is the one public output boundary for every host.
     const sanitize = (value: unknown): unknown => {
@@ -112,7 +144,7 @@ export function validateRequest(request: ActionRequest): void {
     if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
     return;
   }
-  if (request && ['mcp-environments', 'mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call'].includes(request.action)) {
+  if (request && ['mcp-environments', 'mcp-discover', 'mcp-add', 'mcp-list', 'mcp-remove', 'mcp-tools', 'mcp-call', 'mcp-catalog', 'mcp-tool-call'].includes(request.action)) {
     if (request.backend !== undefined && typeof request.backend !== 'string') throw new ToolingError('INVALID_REQUEST', 'Backend must be a URL string.');
     return;
   }

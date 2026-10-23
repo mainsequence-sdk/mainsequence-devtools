@@ -1,12 +1,13 @@
 // Extracted from ms-vscode-extension/src/api.ts and authSession.ts (0.1.45).
 // Host-independent machine mode; the VS Code legacy fallback stays with that host.
 import * as crypto from 'crypto';
-import { readMcpResponse } from './mcpTransport';
+import { describeSeconds, failureReason, readMcpResponse } from './mcpTransport';
 import * as http from 'http';
 import { normalizeBackendUrl } from './config';
 import { clearSession, CredentialStore, ForeignEntryError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
 import { HostServices, SessionService, SessionStatus, SessionPersistence, ToolingError } from './models';
 import { validateExpectedAccount } from './accountScope';
+import type { SessionLock } from './sharedTransport';
 
 class AccountChangedError extends ToolingError {
   constructor() { super('AUTH_REJECTED', 'The MainSequence account or session changed. Refresh the current view before continuing.'); }
@@ -71,6 +72,7 @@ export class MachineSessionService implements SessionService {
     fetch?: typeof fetch;
     loginTimeoutMs?: number;
     requestTimeoutMs?: number;
+    sessionLock?: SessionLock;
   } = {}) {
     this.env = { ...(options.env ?? process.env) };
     this.store = options.store === undefined ? openCredentialStore({ env: this.env }) : options.store;
@@ -128,42 +130,63 @@ export class MachineSessionService implements SessionService {
     if (!session) throw new ToolingError('NOT_AUTHENTICATED', 'No session is saved for this backend. Run login.');
     return { session, source: 'machine' };
   }
+  async selectionIdentity(input: string): Promise<{ key: string; expiresAt?: number }> {
+    const backend = requireBackend(input), {session, source} = await this.selected(backend);
+    const expiresAt = expiry(session.access);
+    return { key:crypto.createHash('sha256').update(JSON.stringify([backend,source,session.username,session.access,session.refresh])).digest('hex'),
+      ...(expiresAt ? {expiresAt:Date.parse(expiresAt)} : {}) };
+  }
   private async http<T>(backend: string, method: string, apiPath: string, body?: unknown, access?: string, timeoutMs?: number): Promise<T> {
     this.options.signal?.throwIfAborted();
     if ((apiPath !== '/mcp' && !/^\/(api|auth)\//.test(apiPath)) || apiPath.includes('..')) throw new ToolingError('INVALID_REQUEST', 'Only existing /api/, /auth/, or central /mcp endpoints can be requested.');
     const controller = new AbortController();
     const abort = () => controller.abort();
     this.options.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, this.options.requestTimeoutMs ?? timeoutMs ?? 30_000);
+    const budget = this.options.requestTimeoutMs ?? timeoutMs ?? 30_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, budget);
     try {
       const response = await (this.options.fetch ?? fetch)(backend + apiPath, {
         method, redirect: 'error', signal: controller.signal,
+        // Opt-in shared transports may deduplicate only these stateless platform
+        // reads. Never infer read safety from arbitrary project tool annotations.
+        ...(apiPath === '/mcp' && body && typeof body === 'object' && (
+          ['initialize', 'notifications/initialized', 'tools/list'].includes((body as any).method)
+          || (body as any).method === 'tools/call' && ['agent.list', 'agent.search', 'agent.get', 'resource_release.mcp_endpoints'].includes((body as any).params?.name)
+        ) ? { cache: 'force-cache' as const } : {}),
         headers: { 'Content-Type': 'application/json', ...(apiPath === '/mcp' ? { Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25' } : {}), ...(access ? { Authorization: `Bearer ${access}` } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body)
       });
       if (response.status === 401 || response.status === 403) throw new ToolingError('AUTH_REJECTED', 'The backend rejected the selected credentials.');
-      if (!response.ok) throw new ToolingError('API_ERROR', `The backend returned HTTP ${response.status}.`);
-      if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>) as T;
+      if (!response.ok) throw new ToolingError('API_ERROR', `The backend ${backend} returned HTTP ${response.status} for ${method} ${apiPath}.`);
+      if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>, 'platform MCP ' + backend) as T;
       if (response.status === 204) return undefined as T;
       try { return await response.json() as T; } catch { throw new ToolingError('API_ERROR', 'The backend returned an invalid JSON response.'); }
     } catch (error) {
       if (this.options.signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
       if (error instanceof ToolingError) throw error;
-      throw new ToolingError('BACKEND_UNREACHABLE', 'The backend could not be reached. The saved session has been kept.');
+      throw new ToolingError('BACKEND_UNREACHABLE', `The backend ${backend} could not be reached for ${method} ${apiPath}: `
+        + (timedOut ? `the request timed out after ${describeSeconds(budget)} s` : failureReason(error) || 'the connection failed') + '. The saved session has been kept.');
     } finally {
       clearTimeout(timer);
       this.options.signal?.removeEventListener('abort', abort);
     }
   }
-  private renew(backend: string, expectedAccount?: string): Promise<MachineSession> {
+  private renew(backend: string, expectedAccount?: string, stale?: MachineSession): Promise<MachineSession> {
     const renewalKey = JSON.stringify([backend, expectedAccount]);
     const running = this.renewals.get(renewalKey);
     if (running) return running;
-    const task = (async () => {
+    const run = async () => {
       // Bypass cached state: another SDK process may have rotated the refresh token.
       const previous = await this.saved(backend);
       if (!previous?.refresh) throw new ToolingError('NOT_AUTHENTICATED', 'No refreshable machine session is saved for this backend.');
       if (expectedAccount !== undefined && previous.username && previous.username !== expectedAccount) throw this.accountChanged();
+      // Another host process may have renewed while this one waited for the
+      // shared lease. Reuse its saved pair; never rotate it a second time.
+      if (stale && previous.access && previous.access !== stale.access) {
+        if (expectedAccount !== undefined) await this.verifyAccount(backend, previous, expectedAccount);
+        return previous;
+      }
       let data: unknown;
       try { data = await this.http(backend, 'POST', '/auth/jwt-token/token/refresh/', { refresh: previous.refresh }); }
       catch (error) {
@@ -173,14 +196,18 @@ export class MachineSessionService implements SessionService {
       const session = this.remember(tokenPair(data, previous));
       if (expectedAccount !== undefined) {
         const current = await this.saved(backend);
-        if (!current || current.access !== previous.access || current.refresh !== previous.refresh) throw this.accountChanged();
+        // A shared transport can coalesce simultaneous rotations. Another client
+        // may already have saved this exact returned pair; that is the same login.
+        if (!current || (current.access !== previous.access || current.refresh !== previous.refresh)
+          && (current.access !== session.access || current.refresh !== session.refresh)) throw this.accountChanged();
       }
       // Refresh may rotate the old token. Keep the new pair even if the subsequent
       // profile check is unavailable; no domain request runs before that check passes.
       await this.persist(backend, session);
       if (expectedAccount !== undefined) await this.verifyAccount(backend, session, expectedAccount);
       return session;
-    })();
+    };
+    const task = this.options.sessionLock ? this.options.sessionLock(backend, run, this.options.signal) : run();
     this.renewals.set(renewalKey, task);
     void task.finally(() => this.renewals.delete(renewalKey)).catch(() => {});
     return task;
@@ -249,14 +276,20 @@ export class MachineSessionService implements SessionService {
       request: (value, method, apiPath, body, retrySafe = method === 'GET', options) => {
         target(value); return this.accountRequest(backend, method, apiPath, body, retrySafe, options, expectedAccount);
       },
-      status: async value => {
+      status: async (value, check = true) => {
         target(value);
-        await this.accountRequest(backend, 'GET', '/api/v1/users/me/', undefined, true, undefined, expectedAccount);
+        // During one account-bound operation, reuse the identity verified for this
+        // exact access token. Still reread shared credentials on every boundary;
+        // a changed token must be verified before it can access the remote service.
+        if (check) await this.accountRequest(backend, 'GET', '/api/v1/users/me/', undefined, true, undefined, expectedAccount);
         const current = await this.selected(backend);
         await this.verifyAccount(backend, current.session, expectedAccount);
-        const status = await this.status(backend);
-        if (!status.authenticated) throw this.accountChanged();
-        return { ...status, username: expectedAccount, checked: true };
+        const final = await this.selected(backend);
+        if (final.source !== current.source || final.session.access !== current.session.access || final.session.refresh !== current.session.refresh) throw this.accountChanged();
+        const source = current.source === 'environment' ? 'environment' : this.options.persistence?.mode ?? 'machine';
+        return { backend, authenticated:true, source, persistence:source,
+          store:source === 'environment' ? null : this.options.persistence?.name ?? this.store?.name ?? null,
+          username:expectedAccount, expiresAt:expiry(current.session.access), checked:true };
       },
       login: unsupported, logout: unsupported, refresh: unsupported,
       sanitize: text => this.sanitize(text),
@@ -269,7 +302,7 @@ export class MachineSessionService implements SessionService {
     const backend = requireBackend(input);
     let { session, source } = await this.selected(backend);
     if (!session.access || (expiry(session.access) && Date.parse(expiry(session.access)!) <= Date.now() + 30_000)) {
-      if (source === 'machine') session = await this.renew(backend, expectedAccount);
+      if (source === 'machine') session = await this.renew(backend, expectedAccount, session);
       else if (!session.access) throw new ToolingError('NOT_AUTHENTICATED', 'The explicit environment has no access token.');
     }
     const send = async (selected: MachineSession): Promise<T> => {
@@ -293,7 +326,7 @@ export class MachineSessionService implements SessionService {
       if (source === 'environment') throw refusedCredentials('environment', backend, session.access);
       if (!retrySafe) throw error;
       const latest = await this.saved(backend);
-      const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend, expectedAccount);
+      const retry = latest?.access && latest.access !== session.access ? latest : await this.renew(backend, expectedAccount, session);
       try { return await send(retry); }
       catch (retryError) {
         if (retryError instanceof AccountChangedError) throw retryError;

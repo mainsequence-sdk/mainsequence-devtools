@@ -8,7 +8,7 @@ import { ExecutionState, setupRepository, withProjectLock, projectEnvironment } 
 import { repositorySshKeyIdentity } from './repositoryIdentity';
 import { requireBackend } from './session';
 
-type Input = { backend: string; environmentUid: string; projectUid: string; baseDir: string };
+type Input = { backend: string; environmentUid: string; projectUid: string; baseDir: string; instructionsFile?: 'AGENTS.md' | 'CLAUDE.md' };
 type Options = { host: HostServices; session: SessionService; env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState };
 type Checkout = { repositoryUid: string; branchUid: string; name: string; branch: string; path: string; sourcePath: string };
 export type OrganizationProjectWorkspace = { root: string; name: string; projectUid: string; environmentUid: string; repositories: Checkout[]; claudeUrl: string };
@@ -89,6 +89,8 @@ async function namedDirectory(parent: string, name: string, uid: string): Promis
 /** Stable, independent branch checkouts. No reset, stash, force checkout, deletion or automatic pull. */
 export async function setupOrganizationProject(input: Input, options: Options): Promise<OrganizationProjectWorkspace> {
   const { session, signal, state } = options;
+  if (input.instructionsFile !== undefined && !['AGENTS.md','CLAUDE.md'].includes(input.instructionsFile)) throw new ToolingError('INVALID_REQUEST','Choose AGENTS.md or CLAUDE.md instructions.');
+
   const backend = requireBackend(input.backend), environmentUid = projectUid(input.environmentUid), uid = projectUid(input.projectUid);
   const env = projectEnvironment({ backend }, options.env);
   // Apply the same environment to nested Git helpers, including context and .env setup.
@@ -203,13 +205,15 @@ export async function setupOrganizationProject(input: Input, options: Options): 
       }
       if (await run(row.path, ['symbolic-ref', '--short', 'HEAD']) !== row.branch) throw new ToolingError('INVALID_GIT_CONTEXT', 'The checkout did not select the project branch.');
     }
-    const instructions = path.join(root, 'CLAUDE.md');
+    const instructionsFile = input.instructionsFile ?? 'CLAUDE.md';
+    if (!['AGENTS.md', 'CLAUDE.md'].includes(instructionsFile)) throw new ToolingError('INVALID_REQUEST', 'Choose AGENTS.md or CLAUDE.md instructions.');
+    const instructions = path.join(root, instructionsFile);
     if (!await exists(instructions)) {
       const legacyInstructions = path.join(container, 'CLAUDE.md');
-      const content = prior?.schemaVersion === 1 && await exists(legacyInstructions)
+      const content = instructionsFile === 'CLAUDE.md' && prior?.schemaVersion === 1 && await exists(legacyInstructions)
         ? await fs.readFile(legacyInstructions, 'utf8')
         : '# MainSequence workspace\n\nThe project repositories and their assigned branches are listed in `.mainsequence-project.json`.\nThe MainSequence plugin adds each repository to this Claude session with `/add-dir`.\nWork inside the appropriate repository directory; each checkout has its own Git history and instructions.\n';
-      await fs.writeFile(instructions, content, { flag: 'wx' });
+      await fs.writeFile(instructions, instructionsFile === 'AGENTS.md' ? content.replace('The MainSequence plugin adds each repository to this Claude session with `/add-dir`.','Open the repository paths listed in the manifest in your editor. Grant access to each checkout before working in it.') : content, { flag: 'wx' });
     }
     await atomicJson(manifestPath, { ...manifest, status: 'ready' });
     await atomicJson(path.join(root, '.mainsequence-project.json'), { ...manifest, status: 'ready' });

@@ -1,6 +1,6 @@
 # MainSequence developer tooling
 
-One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, the `ms-devtools` command runner and the project MCP client. Both SDK repositories remain unchanged. Host integrations live in their own repositories and consume only this package's public API: [VS Code](https://github.com/mainsequence-sdk/ms-vscode-extension), [Claude Desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop) and, since 0.3.0, the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin) ([ADR 0003](docs/adr/0003-codex-plugin-extraction.md)). There are no runtime npm dependencies or LLM API calls in the runner. The MCP client calls the existing platform directory and selected project MCP endpoints; the developer actions retain their deterministic execution.
+One TypeScript package owns the shared action models, browser authentication, machine session, repository resolution, project dispatch, the `ms-devtools` command runner and the project MCP client. Both SDK repositories remain unchanged. Host integrations live in their own repositories and consume only this package's public API: [VS Code](https://github.com/mainsequence-sdk/ms-vscode-extension), [Claude Desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop) and, since 0.3.0, the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin) ([ADR 0003](docs/adr/0003-codex-plugin-extraction.md)). Since 0.3.12 both plugins register saved project MCP tools through the [shared project-tool registry](#shared-project-tool-registry-0312) ([ADR 0004](docs/adr/0004-shared-project-tool-registry.md)). There are no runtime npm dependencies or LLM API calls in the runner. The MCP client calls the existing platform directory and selected project MCP endpoints; the developer actions retain their deterministic execution.
 
 ## Build and run
 
@@ -33,7 +33,96 @@ The machine record is the SDKs' existing `MainSequenceCLI.auth` service, backend
 
 ## Project MCP client
 
+In 0.3.6, remote tool failures use `MCP_TOOL_ERROR` and retain the sanitized MCP
+`content`/`structuredContent` in `ActionResult.data`, separately from transport/API
+errors. Hosts must preserve that result and any `effects` warning. Calls are never
+automatically replayed.
+
+Since 0.3.7, a persistent client reuses verified release metadata, the release grant
+and its tool catalog in memory for at most 60 seconds (never beyond credential
+expiry). A prepared `mcp-call` sends only the business `tools/call` HTTP request.
+`mcp-tools` explicitly refreshes schemas without repeating valid connection setup.
+Cold setup verifies the account remotely at entry and completion; warm calls reread
+the shared credential selection locally before and after execution. Logout, a
+changed credential pair or saved endpoint, removal, expiry and transport failures
+invalidate reuse. The server continues to enforce authorization for each call.
+Tool results and credentials are never written to connection metadata; failed calls
+are never replayed automatically, including after Stop.
+
+`createDevTools()` owns a cache by default. Hosts that create a new dispatcher per
+request can pass the same opaque `createMcpConnectionCache()` handle as `mcpCache`;
+devtools owns validation and expiry, while each request retains its own cancellation
+signal. A session adapter without `selectionIdentity()` always uses fresh setup.
+Separate CLI processes do not share this memory cache.
+
+Version 0.3.3 adds the public `AgentDelivery` service for durable host conversations.
+It stages immutable requests, records native submission acknowledgements separately
+from agent delivery, and reuses saved receipts on recovery. It uses the same session,
+agent and readiness APIs as other consumers; no host UI code is included. See
+[the delivery contract](docs/agent-conversations.md#durable-host-delivery-033).
+
 The `mcp-discover`, `mcp-add`, `mcp-list`, `mcp-remove`, `mcp-tools` and `mcp-call` actions discover the platform's MCP directory, remember a selected release and invoke its tools through a local MCP client, using the existing developer session and short-lived release credentials. They are available from `ms-devtools` and from `createDevTools().dispatch()`; hosts may inject `mcpConnectionsPath`. Since 0.3.1, `mcp-add` reads the release's name, its repository's name and its repository branch from the release directory and stores them with the connection as `name`, `display_name` and `code_repository_branch_uid`, so `mcp-list` labels a saved connection without a backend request; a record saved by an earlier version is completed by the first listing that can read them, and a label that cannot be read is left out rather than making the MCP unavailable. Discovery rows carry `name` and `code_repository_branch_uid` as the platform directory reports them. The conversational `mainsequence-mcp` skill that lets Codex use them without `/ms` ships with the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin), together with [its user guide](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/conversational-mcp.md) and [ADR 0002](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/adr/0002-conversational-project-mcp-client.md).
+
+A cold project MCP (a scaled-to-zero FastAPI release) is slow. Measured against the
+Production CRM on 2026-10-23, a first `mcp-call` took 53–71 s (release detail and
+exchange-launch about 2 s each, the project's `initialize` 9 s to over 60 s, `tools/call`
+10–39 s); a warm one 7–10 s. Since 0.3.12 project requests have their own budget,
+`projectRequestTimeoutMs` (default 120 s; `requestTimeoutMs` keeps governing backend
+requests, default 30 s), and a `tools/call` honours the tool's advertised
+`_meta["mainsequence.ai/timeout-seconds/v1"]` when it is larger, capped at 300 s. Hosts set
+their outer limit above this (Codex `tool_timeout_sec`, the Claude Desktop worker budget).
+Error messages say which endpoint answered which request (`The project MCP https://… returned
+HTTP 503 for tools/call crm_contacts_list.`), tell a timeout (`timed out after 120 s`) apart
+from a connection failure (`failed before a response arrived (ECONNREFUSED)`), and keep a
+JSON-RPC error's own message, redacted. The error codes are unchanged.
+
+## Shared project-tool registry (0.3.12)
+
+Both host plugins present every saved project MCP connection's tools as first-class tools of
+the host, named `ms_<tool>_<hash>` (for example `ms_crm_contacts_list_183f8138`), so a model
+calls `crm_contacts_list` like any other tool instead of walking a discovery protocol. Since
+0.3.12 this package owns that registry ([ADR 0004](docs/adr/0004-shared-project-tool-registry.md))
+and the plugins keep only what is specific to their host.
+
+- `projectToolName(backend, environmentUid, releaseUid, tool)`: `ms_` + the remote name
+  (characters outside `[a-zA-Z0-9_-]` replaced by `_`, cut to 32) + `_` + the lower-case
+  hexadecimal FNV-1a 32-bit hash of `backend:environment:release:tool`. One remote tool has
+  one name in every host; the CRM vector above is a frozen test.
+- `projectToolDefinition(connection, tool)` and `projectToolDefinitions(connection, tools)`
+  (80 per connection, duplicates and invalid tools dropped): `{ name, title, description,
+  inputSchema, annotations }` with the description `MainSequence <release name> [<environment>]:
+  <remote description>`, an object schema (`type: 'object'` added when the server omitted it)
+  and the four boolean hints, open-world by default.
+- `projectToolResult(actionResult)`: what a host returns for a forwarded call: the remote
+  content blocks, then one JSON text block with `summary`, `effects`, `error` and
+  `structuredContent` when the call failed, returned structured content or no blocks;
+  `isError` on any non-success, with the remote content of an `MCP_TOOL_ERROR` preserved.
+- `readProjectToolCatalog(dispatch, { backend?, environmentUid?, previous?, signal? })`:
+  `mcp-list` (read-only), then one `mcp-tools` per saved connection, two at a time. A
+  connection whose catalog cannot be read keeps its previous tools and is named in
+  `unavailable`; a removed connection loses them; connections outside the scope are carried
+  over. No account snapshot is attached: the session for a connection's backend is verified
+  when its tool is called.
+- `createProjectToolCatalog({ dispatch, file?, staleMs?, notify?, disabled? })`: the shared
+  on-disk catalog, `project-tool-catalog.json` beside `mcp-connections.json`
+  (`mainSequenceStateDirectory(env)` names that directory). `list()` answers from the file at
+  once, scoped to the current account's backend once a refresh has learned it; `refresh()`
+  re-reads under a lock, so one process reads catalogs at a time while the others pick its
+  result up from the file; `update()`, `dispose()` and `notify` serve a long-lived host such as
+  the Codex MCP server. The file holds schemas and labels only, never credentials, tool
+  results or tokens.
+- The `mcp-catalog` action returns the same definitions, bindings and state for a host that
+  dispatches actions instead of importing (the Claude Desktop hook reaches this package only
+  through a worker process): without `refresh` from the file, with `refresh: true` re-reading
+  a stale cache, with `'force'` always, waiting up to two minutes for another process's
+  refresh to end. `mcp-tool-call` is `mcp-call` answered in the `projectToolResult` shape.
+  `ms-devtools mcp-catalog [--refresh]` is the command-line form.
+
+What stays host-specific: the Codex server merges the definitions into its `tools/list`,
+sends `tools/list_changed`, keeps its `contextId` discovery layer and shared transport, and
+forwards an `ms_*` call through `mcp-call` and `projectToolResult`; the Claude Desktop hook
+registers the definitions with `$.tool.register`, asks `$.ui.ask` before every call,
+converts the result's blocks to Messages API blocks and spawns one worker per action.
 
 ## Shared discovery API (0.3.2)
 
@@ -139,7 +228,7 @@ Tests use a loopback fixture backend, synthetic in-memory store entries, stand-i
 
 The optional SDK compatibility script checks the **actual provided SDK source implementations** against synthetic in-memory records in both directions, with an isolated temporary Python home. It imports the SDK private session implementation only for compatibility verification, never as a product dependency, and loads its dependencies from the specified checkout without running the SDK initializer. Set `MAINSEQUENCE_TEST_PYTHON=/path/to/sdk/.venv/bin/python` when its CLI dependencies are unavailable to `python3`. Native-store behavior is tested using the extracted macOS/Linux program fixtures; live OS-store and backend refresh-rotation interoperability require a separate release check.
 
-See [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md), [Phase-1 verification](docs/phase-1-verification.md) and [Phase-2 verification](docs/phase-2-verification.md) for boundaries and outstanding checks.
+See [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md), [ADR 0004](docs/adr/0004-shared-project-tool-registry.md), [Phase-1 verification](docs/phase-1-verification.md) and [Phase-2 verification](docs/phase-2-verification.md) for boundaries and outstanding checks.
 
 ## Phase 2 host integration
 

@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { createDevTools, createNodeHost } = require('../dist/index.js');
+const { createDevTools, createNodeHost, createMcpConnectionCache } = require('../dist/index.js');
 const { parseArguments } = require('../dist/shared/arguments.js');
 const { readMcpResponse } = require('../dist/shared/mcpTransport.js');
 const { memoryStore } = require('./helpers.cjs');
@@ -14,7 +14,7 @@ async function fixture(t) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ms-mcp-test-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = [], state = { denied: false, mode: 'json', token: 'private-release-credential', exchanged: 0, invoked: 0,
-    labels: true, labelsDenied: false, branchDenied: false, branchMismatch: false };
+    labels: true, labelsDenied: false, branchDenied: false, branchMismatch: false, platformAccess:'private-platform-token' };
   const uid = 'b0a5ee29-f649-46ab-a040-38504838a131';
   const secondUid = 'b0a5ee29-f649-46ab-a040-38504838a132';
   const branchUid = 'c1d2e3f4-0000-4000-8000-000000000001';
@@ -70,10 +70,12 @@ async function fixture(t) {
     calls.push({ server: 'platform', path: req.url, method: message?.method, authorization: req.headers.authorization });
     if (req.url === '/auth/jwt-token/token/refresh/') {
       assert.equal(message.refresh, 'private-refresh-token');
+      state.platformAccess='private-platform-token';
       res.setHeader('Content-Type', 'application/json');
       return res.end(JSON.stringify({ access: 'private-platform-token', refresh: 'private-rotated-refresh' }));
     }
-    if (req.headers.authorization !== 'Bearer private-platform-token') return res.writeHead(401).end();
+    if (req.headers.authorization !== 'Bearer ' + state.platformAccess) return res.writeHead(401).end();
+    if (req.url === '/api/v1/users/me/') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ username:'fixture-user' })); }
     if (req.url === '/mcp') {
       if (message.method === 'initialize') return reply(res, message.id, { protocolVersion: '2025-11-25', capabilities: { tools: {} } });
       if (message.method === 'notifications/initialized') return res.writeHead(202).end();
@@ -113,10 +115,155 @@ async function fixture(t) {
   });
   const file = path.join(dir, 'connections.json');
   const create = extra => createDevTools({ host: createNodeHost(), env: { MAINSEQUENCE_ENDPOINT: backend, MAINSEQUENCE_ACCESS_TOKEN: 'private-platform-token' },
-    mcpConnectionsPath: file, requestTimeoutMs: 500, ...extra });
+    mcpConnectionsPath: file, requestTimeoutMs: 500, projectRequestTimeoutMs: 500, ...extra });
   const dispatch = (action, extra = {}, instance = create()) => instance.dispatch({ action, backend, releaseUid: uid, ...extra });
-  return { dir, file, uid, secondUid, branchUid, backend, row, project, calls, state, create, dispatch };
+  return { dir, file, uid, secondUid, branchUid, backend, row, project, calls, state, create, dispatch, tool };
 }
+
+const expiringGrant = seconds => 'eyJhbGciOiJub25lIn0.' + Buffer.from(JSON.stringify({exp:Math.floor(Date.now()/1000)+seconds})).toString('base64url') + '.fixture';
+async function cachedFixture(t,extra={}) {
+  const f=await fixture(t); f.state.token=expiringGrant(600);
+  const mcpCache=createMcpConnectionCache();
+  const run=(action,input={},options={})=>f.dispatch(action,{expectedAccount:'fixture-user',...input},f.create({...extra,mcpCache,...options}));
+  assert.equal((await run('mcp-add')).status,'success');
+  return {...f,run};
+}
+
+test('cold connection setup survives its own account-verified token renewal without retaining a stale grant',async t=>{
+  const f=await fixture(t),store=memoryStore(),now=Date.now;
+  let clock=now();t.after(()=>{Date.now=now;});Date.now=()=>clock;
+  f.state.platformAccess=expiringGrant(90);f.state.token=expiringGrant(600);
+  saveSession(store,f.backend,{username:'fixture-user',access:f.state.platformAccess,refresh:'private-refresh-token'});
+  const mcpCache=createMcpConnectionCache();let advanced=false;
+  const fetchWithExpiry=async(url,options)=>{
+    const response=await fetch(url,options);
+    if(!advanced && JSON.parse(options.body||'{}').method==='tools/list') {clock+=65_000;advanced=true;}
+    return response;
+  };
+  const run=(action,input={})=>f.dispatch(action,{expectedAccount:'fixture-user',...input},f.create({env:{},store,mcpCache,fetch:fetchWithExpiry}));
+  const added=await run('mcp-add');assert.equal(added.status,'success',added.summary);
+  assert.equal(JSON.parse(await fs.readFile(f.file)).length,1);
+  assert.equal(f.calls.filter(c=>c.path==='/auth/jwt-token/token/refresh/').length,1);
+  assert.equal((await run('mcp-tools')).status,'success');
+  const before=f.calls.length;
+  assert.equal((await run('mcp-call',{tool:'read_value',arguments:{}})).status,'success');
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/call']);
+  assert.equal(f.state.invoked,1);
+});
+
+test('separate request dispatchers reuse a memory-only connection: warm calls issue only tools/call',async t=>{
+  const f=await cachedFixture(t), before=f.calls.length;
+  for(const value of [1,2]) {
+    const result=await f.run('mcp-call',{tool:'set_value',arguments:{value}});
+    assert.equal(result.status,'success');assert.equal(result.data.structuredContent.value,value);
+    assert.doesNotMatch(JSON.stringify(result),/private-platform|eyJ/);
+  }
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/call','tools/call']);
+  assert.equal(f.state.invoked,2);
+  assert.doesNotMatch(await fs.readFile(f.file,'utf8'),/fixture|token|tools|eyJ/);
+});
+
+test('catalog reload fetches new schemas without reinitializing, and missing tools are checked before execution',async t=>{
+  const f=await cachedFixture(t), before=f.calls.length;
+  f.tool.name='updated_tool';
+  const result=await f.run('mcp-tools');
+  assert.equal(result.data.tools[1].name,'updated_tool');
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/list','tools/list']);
+  const missing=await f.run('mcp-call',{tool:'set_value',arguments:{}});
+  assert.equal(missing.error.code,'INVALID_REQUEST');assert.equal(f.state.invoked,0);
+});
+
+test('cached transport failure is not replayed and the next explicit call performs fresh setup',async t=>{
+  const f=await cachedFixture(t);f.state.mode='disconnect';const before=f.calls.length;
+  const failure=await f.run('mcp-call',{tool:'set_value',arguments:{value:1}});
+  assert.equal(failure.effects.state,'partial-or-uncertain');assert.equal(f.state.invoked,1);
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/call']);
+  f.state.mode='json';const exchanged=f.state.exchanged;
+  assert.equal((await f.run('mcp-call',{tool:'read_value',arguments:{}})).status,'success');
+  assert.equal(f.state.exchanged,exchanged+1);assert.equal(f.state.invoked,2);
+});
+
+test('business errors preserve the result and keep a valid connection without replaying',async t=>{
+  const f=await cachedFixture(t);f.state.mode='tool-error';const before=f.calls.length;
+  const failure=await f.run('mcp-call',{tool:'read_value',arguments:{}});
+  assert.equal(failure.error.code,'MCP_TOOL_ERROR');assert.equal(failure.data.isError,true);
+  f.state.mode='json';assert.equal((await f.run('mcp-call',{tool:'read_value',arguments:{}})).status,'success');
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/call','tools/call']);
+});
+
+test('cached requests use their own cancellation signal; Stop cannot poison a later request',async t=>{
+  const f=await cachedFixture(t), controller=new AbortController();f.state.mode='timeout';
+  const pending=f.run('mcp-call',{tool:'set_value',arguments:{}},{signal:controller.signal});
+  while(f.state.invoked===0) await new Promise(r=>setTimeout(r,5));controller.abort();
+  const result=await pending;assert.equal(result.status,'cancelled');assert.equal(f.state.invoked,1);
+  f.state.mode='json';assert.equal((await f.run('mcp-tools')).status,'success');
+  assert.equal(f.state.invoked,1,'catalog recovery never repeats the interrupted tool');
+});
+
+test('shared login changes, removed connections and endpoint edits cannot use a cached grant',async t=>{
+  const store=memoryStore();
+  const f=await fixture(t);f.state.token=expiringGrant(600);
+  saveSession(store,f.backend,{username:'fixture-user',access:'private-platform-token',refresh:'original-refresh'});
+  const mcpCache=createMcpConnectionCache();
+  const run=(action,input={})=>f.dispatch(action,{expectedAccount:'fixture-user',...input},f.create({env:{},store,mcpCache}));
+  assert.equal((await run('mcp-add')).status,'success');
+  saveSession(store,f.backend,{username:'another-user',access:'other-access',refresh:'other-refresh'});
+  const before=f.calls.length;
+  assert.equal((await run('mcp-call',{tool:'set_value',arguments:{}})).status,'failure');
+  assert.ok(f.calls.slice(before).every(c=>c.server==='platform'));assert.equal(f.state.invoked,0);
+  saveSession(store,f.backend,{username:'fixture-user',access:'private-platform-token',refresh:'original-refresh'});
+  assert.equal((await run('mcp-tools')).status,'success');
+  const rows=JSON.parse(await fs.readFile(f.file));rows[0].mcp_connection.url='https://different.example/mcp';await fs.writeFile(f.file,JSON.stringify(rows));
+  assert.equal((await run('mcp-call',{tool:'set_value',arguments:{}})).error.code,'INVALID_REQUEST');
+  await fs.writeFile(f.file,'[]');
+  assert.equal((await run('mcp-call',{tool:'set_value',arguments:{}})).error.code,'INVALID_REQUEST');assert.equal(f.state.invoked,0);
+});
+
+test('the cache expires without extending on use and never reuses an expired release grant',async t=>{
+  const f=await cachedFixture(t), now=Date.now;
+  t.after(()=>{Date.now=now;});
+  const first=f.state.exchanged, original=now();
+  Date.now=()=>original+40_000;
+  assert.equal((await f.run('mcp-call',{tool:'read_value',arguments:{}})).status,'success');assert.equal(f.state.exchanged,first);
+  Date.now=()=>original+61_000;
+  assert.equal((await f.run('mcp-tools')).status,'success');assert.equal(f.state.exchanged,first+1);
+  // A valid-looking opaque or near-expiry grant may still be used for this action,
+  // but it must never be retained for another request.
+  f.state.token=expiringGrant(3);
+  await f.run('mcp-add');const count=f.state.exchanged;
+  await f.run('mcp-tools');assert.equal(f.state.exchanged,count+1);
+});
+
+test('a cached grant still requires the selected environment and honors server revocation without replay',async t=>{
+  const f=await cachedFixture(t), before=f.calls.length;
+  const wrong=await f.run('mcp-call',{environmentUid:f.secondUid,tool:'set_value',arguments:{}});
+  assert.equal(wrong.error.code,'INVALID_REQUEST');assert.equal(f.calls.length,before);
+  assert.equal((await f.run('mcp-tools')).status,'success');
+  f.state.token='revoked-grant';const revokedAt=f.calls.length;
+  const denied=await f.run('mcp-call',{tool:'set_value',arguments:{}});
+  assert.equal(denied.error.code,'AUTH_REJECTED');assert.equal(f.state.invoked,0);
+  assert.deepEqual(f.calls.slice(revokedAt).map(c=>c.method),['tools/call']);
+  f.state.token=expiringGrant(600);const exchanged=f.state.exchanged;
+  assert.equal((await f.run('mcp-tools')).status,'success');assert.equal(f.state.exchanged,exchanged+1);
+});
+
+test('a login change during a warm call discards its result and never repeats the operation',async t=>{
+  const f=await fixture(t), store=memoryStore();f.state.token=expiringGrant(600);
+  saveSession(store,f.backend,{username:'fixture-user',access:'private-platform-token',refresh:'original-refresh'});
+  const mcpCache=createMcpConnectionCache();
+  const run=(action,input={},options={})=>f.dispatch(action,{expectedAccount:'fixture-user',...input},f.create({env:{},store,mcpCache,...options}));
+  assert.equal((await run('mcp-add')).status,'success');const before=f.calls.length;
+  const changedFetch=async(url,options)=>{
+    const response=await fetch(url,options);
+    if(JSON.parse(options.body || '{}').method==='tools/call')
+      saveSession(store,f.backend,{username:'another-user',access:'other-access',refresh:'other-refresh'});
+    return response;
+  };
+  const result=await run('mcp-call',{tool:'set_value',arguments:{value:9}},{fetch:changedFetch});
+  assert.equal(result.error.code,'AUTH_REJECTED');assert.equal(result.data,undefined);
+  assert.equal(result.effects.state,'partial-or-uncertain');assert.equal(f.state.invoked,1);
+  assert.deepEqual(f.calls.slice(before).map(c=>c.method),['tools/call']);
+});
 
 test('conversation workflow discovers, saves, immediately calls and remembers MCP connections across client instances', async t => {
   const f = await fixture(t);
@@ -288,8 +435,25 @@ test('failed tools are not replayed and return uncertainty with credentials reda
     const result = await f.dispatch('mcp-call', { tool: 'set_value', arguments: { value: 1 } });
     assert.equal(result.status, 'failure', mode); assert.equal(f.state.invoked, before + 1, mode);
     assert.equal(result.effects.state, 'partial-or-uncertain', mode);
+    if (mode === 'tool-error') {
+      assert.equal(result.error.code, 'MCP_TOOL_ERROR');
+      assert.equal(result.data.isError, true);
+      assert.equal(result.data.structuredContent.value, 1);
+    }
     assert.doesNotMatch(JSON.stringify(result), /private-release-credential|private-platform-token/);
   }
+});
+
+test('account-bound MCP calls verify remotely at the action boundaries, not every protocol message', async t => {
+  const f = await fixture(t); await f.dispatch('mcp-add');
+  const before = f.calls.length;
+  const result = await f.dispatch('mcp-call', { tool:'set_value', arguments:{ value:7 }, expectedAccount:'fixture-user' });
+  assert.equal(result.status, 'success'); assert.equal(result.data.structuredContent.value, 7);
+  const calls = f.calls.slice(before);
+  assert.equal(calls.filter(c => c.path === '/api/v1/users/me/').length, 2);
+  assert.equal(calls[0].path, '/api/v1/users/me/');
+  assert.equal(calls.at(-1).path, '/api/v1/users/me/');
+  assert.equal(calls.filter(c => c.method === 'tools/call').length, 1);
 });
 
 test('POST SSE and paginated tools work; unsupported stateful endpoints are not saved', async t => {

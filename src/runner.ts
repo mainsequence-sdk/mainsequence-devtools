@@ -19,7 +19,7 @@ async function main() {
       result = await tooling.dispatch(parsed.request!);
     } catch (error) {
       const message = error instanceof ToolingError ? error.message : 'The command could not be parsed.';
-      result = { schemaVersion: 1, action: 'invalid', status: 'failure', summary: message, error: { code: 'INVALID_REQUEST', message } };
+      result = { schemaVersion: 1, action: 'invalid', status: 'failure', summary: message, error: { code: error instanceof ToolingError ? error.code : 'INVALID_REQUEST', message } };
     }
     process.stdout.write(argv.includes('--json') ? JSON.stringify(result) + '\n' : result.summary + '\n' + (result.data === undefined ? '' : JSON.stringify(result.data, null, 2) + '\n'));
     process.exitCode = result.status === 'success' ? 0 : result.status === 'cancelled' ? 130 : 1;
