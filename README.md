@@ -33,6 +33,34 @@ The machine record is the SDKs' existing `MainSequenceCLI.auth` service, backend
 
 ## Project MCP client
 
+In 0.3.6, remote tool failures use `MCP_TOOL_ERROR` and retain the sanitized MCP
+`content`/`structuredContent` in `ActionResult.data`, separately from transport/API
+errors. Hosts must preserve that result and any `effects` warning. Calls are never
+automatically replayed.
+
+Since 0.3.7, a persistent client reuses verified release metadata, the release grant
+and its tool catalog in memory for at most 60 seconds (never beyond credential
+expiry). A prepared `mcp-call` sends only the business `tools/call` HTTP request.
+`mcp-tools` explicitly refreshes schemas without repeating valid connection setup.
+Cold setup verifies the account remotely at entry and completion; warm calls reread
+the shared credential selection locally before and after execution. Logout, a
+changed credential pair or saved endpoint, removal, expiry and transport failures
+invalidate reuse. The server continues to enforce authorization for each call.
+Tool results and credentials are never written to connection metadata; failed calls
+are never replayed automatically, including after Stop.
+
+`createDevTools()` owns a cache by default. Hosts that create a new dispatcher per
+request can pass the same opaque `createMcpConnectionCache()` handle as `mcpCache`;
+devtools owns validation and expiry, while each request retains its own cancellation
+signal. A session adapter without `selectionIdentity()` always uses fresh setup.
+Separate CLI processes do not share this memory cache.
+
+Version 0.3.3 adds the public `AgentDelivery` service for durable host conversations.
+It stages immutable requests, records native submission acknowledgements separately
+from agent delivery, and reuses saved receipts on recovery. It uses the same session,
+agent and readiness APIs as other consumers; no host UI code is included. See
+[the delivery contract](docs/agent-conversations.md#durable-host-delivery-033).
+
 The `mcp-discover`, `mcp-add`, `mcp-list`, `mcp-remove`, `mcp-tools` and `mcp-call` actions discover the platform's MCP directory, remember a selected release and invoke its tools through a local MCP client, using the existing developer session and short-lived release credentials. They are available from `ms-devtools` and from `createDevTools().dispatch()`; hosts may inject `mcpConnectionsPath`. Since 0.3.1, `mcp-add` reads the release's name, its repository's name and its repository branch from the release directory and stores them with the connection as `name`, `display_name` and `code_repository_branch_uid`, so `mcp-list` labels a saved connection without a backend request; a record saved by an earlier version is completed by the first listing that can read them, and a label that cannot be read is left out rather than making the MCP unavailable. Discovery rows carry `name` and `code_repository_branch_uid` as the platform directory reports them. The conversational `mainsequence-mcp` skill that lets Codex use them without `/ms` ships with the [Codex plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin), together with [its user guide](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/conversational-mcp.md) and [ADR 0002](https://github.com/mainsequence-sdk/mainsequence-codex-plugin/blob/main/docs/adr/0002-conversational-project-mcp-client.md).
 
 ## Shared discovery API (0.3.2)

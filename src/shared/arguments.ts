@@ -1,6 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import type { McpRequest } from './mcp';
 import { ActionRequest, ProjectType, ToolingError } from './models';
+import { currentDirectory } from './workingDirectory';
 
 export const HELP = `MainSequence developer tooling (Node 22+)
 
@@ -25,7 +26,7 @@ open-folder and signed-terminal require a host with those native capabilities.
 In Codex desktop, type /ms, select the ms slash-menu entry, then append COMMAND ... .
 The trusted plugin hook executes the selected command before inference.
 `;
-export function parseArguments(argv: string[], cwd = process.cwd()): { request?: ActionRequest; json: boolean; help?: boolean } {
+export function parseArguments(argv: string[], cwd?: string): { request?: ActionRequest; json: boolean; help?: boolean } {
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') return { json: argv.includes('--json'), help: true };
   const action = argv[0];
   const flags: Record<string, string | boolean> = {};
@@ -76,7 +77,7 @@ export function parseArguments(argv: string[], cwd = process.cwd()): { request?:
   } else if (['login', 'logout', 'refresh-token', 'repositories'].includes(action)) request = { action, ...common } as ActionRequest;
   else if (action === 'auth-status') request = { action, ...common, check: Boolean(flags['--check']) };
   else if (action === 'setup') request = { action, ...common, repositoryUid: flags['--uid'] as string, branch: flags['--branch'] as string, baseDir: flags['--base-dir'] as string, install: Boolean(flags['--install']) };
-  else request = { action, ...common, root: flags['--path'] as string || cwd, projectType: flags['--type'] as ProjectType | undefined, dryRun: Boolean(flags['--dry-run']) } as ActionRequest;
+  else request = { action, ...common, root: flags['--path'] as string || cwd || currentDirectory(), projectType: flags['--type'] as ProjectType | undefined, dryRun: Boolean(flags['--dry-run']) } as ActionRequest;
   return { request, json: Boolean(flags['--json']) };
 }
 

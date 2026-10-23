@@ -13,7 +13,7 @@ export type OrganizationProjectRequest = { backend?: string; expectedAccount?: s
   | { action: 'organization-projects'; environmentUid: string; search?: string; limit?: number; offset?: number }
   | { action: 'organization-project'; environmentUid: string; projectUid: string }
   | { action: 'organization-project-link'; environmentUid: string; projectUid: string; branchUid?: string; target: 'project' | 'repository' | 'branch'; commandCenterUrl?: string }
-  | { action: 'organization-project-setup'; environmentUid: string; projectUid: string; baseDir: string }
+  | { action: 'organization-project-setup'; environmentUid: string; projectUid: string; baseDir: string; instructionsFile?: 'AGENTS.md' | 'CLAUDE.md' }
 );
 
 export function projectUid(value: unknown, label = 'UID'): string {

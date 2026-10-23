@@ -3,15 +3,16 @@ import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport } from './mcpTransport';
 import { waitForAgentReadiness } from './agentReadiness';
+import { inlineAgentAsset, AgentAsset } from './agentIcon';
 
 type AgentSelection = { backend?: string; environmentUid: string; expectedAccount?: string };
 export type AgentRequest = AgentSelection & (
-  | { action: 'agents-list'; search?: string; limit?: number; offset?: number }
-  | { action: 'agent-get'; agentUid: string }
+  | { action: 'agents-list'; search?: string; limit?: number; offset?: number; includeIcons?: boolean }
+  | { action: 'agent-get'; agentUid: string; includeIcons?: boolean }
   | { action: 'agent-session'; agentUid: string; handleId?: string; sessionUid?: string }
   | { action: 'agent-readiness'; agentUid: string; sessionUid: string; timeoutMs?: number }
   | { action: 'agent-send'; agentUid: string; message: string; responseKind: 'message' | 'task';
-      handleId?: string; sessionUid?: string; taskUid?: string; waitForReady?: boolean }
+      handleId?: string; sessionUid?: string; taskUid?: string; waitForReady?: boolean; messageId?: string }
   | { action: 'agent-task-get' | 'agent-task-wait' | 'agent-task-cancel'; agentUid: string; taskUid: string; afterSequence?: number }
 );
 export type PlatformAgent = {
@@ -19,6 +20,7 @@ export type PlatformAgent = {
   repositoryBranch: string; runtimeReleaseUid: string | null; runtimeState: string; responseKinds: string[];
   defaults: { provider: string; model: string; thinking: string };
   skills: { name: string; description: string; examples: string[] }[];
+  icon?: AgentAsset | null;
 };
 export function isAgentAction(action: string): boolean {
   return ['agents-list', 'agent-get', 'agent-session', 'agent-readiness', 'agent-send', 'agent-task-get', 'agent-task-wait', 'agent-task-cancel'].includes(action);
@@ -30,10 +32,11 @@ function uuid(value: unknown): string {
   return value.toLowerCase();
 }
 function text(value: unknown, limit = 16000): string { return typeof value === 'string' ? value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit) : ''; }
-function agent(row: any, environmentUid: string): PlatformAgent {
+function agent(row: any, environmentUid: string, includeIcons = false): PlatformAgent {
   if (!row || uuid(row.organization_environment_uid) !== environmentUid) throw new ToolingError('INVALID_REQUEST', 'This agent belongs to a different environment. Refresh the directory.');
   if (!text(row.name).trim()) throw new ToolingError('API_ERROR', 'The agent directory returned an unnamed agent.');
   return { uid: uuid(row.uid), name: text(row.name, 300), description: text(row.description), environmentUid,
+    ...(includeIcons ? { icon: inlineAgentAsset(row.command_center_icon) } : {}),
     environmentName: text(row.organization_environment_name, 300), repositoryBranch: text(row.repository_branch, 300),
     runtimeReleaseUid: row.runtime_release_uid ? uuid(row.runtime_release_uid) : null,
     runtimeState: text(row.runtime_update?.state, 50) || 'unknown',
@@ -53,6 +56,7 @@ export class AgentClient {
       const backend = requireBackend(selectedBackend), environmentUid = uuid(input.environmentUid);
       this.options.signal?.throwIfAborted();
       if (!isAgentAction(input.action)) throw new ToolingError('INVALID_REQUEST', 'Unknown agent action.');
+      if ('includeIcons' in input && input.includeIcons !== undefined && typeof input.includeIcons !== 'boolean') throw new ToolingError('INVALID_REQUEST', 'includeIcons must be a boolean.');
       const identity = await this.session.status(backend, true);
       if (!identity.authenticated || !identity.username) throw new ToolingError('NOT_AUTHENTICATED', 'Sign in to MainSequence to use agents.');
       if (input.expectedAccount !== undefined && input.expectedAccount !== identity.username) throw new ToolingError('AUTH_REJECTED', 'The MainSequence account changed. Refresh agents and start a new conversation.');
@@ -101,13 +105,15 @@ export class AgentClient {
         if (!Number.isInteger(limit) || limit < 1 || limit > 100 || !Number.isInteger(offset) || offset < 0
           || (input.search !== undefined && (typeof input.search !== 'string' || input.search.length > 2000))) throw new ToolingError('INVALID_REQUEST', 'Search requires text, a limit of 1–100, and a nonnegative offset.');
         const search = input.search?.trim();
-        const page = search ? await call('agent.search', { organization_environment_uid: environmentUid, q: search, limit })
-          : await call('agent.list', { organization_environment_uid: environmentUid, limit, offset });
+        const icons = input.includeIcons ? { include_icons:true } : {};
+        const page = search ? await call('agent.search', { organization_environment_uid: environmentUid, q: search, limit, ...icons })
+          : await call('agent.list', { organization_environment_uid: environmentUid, limit, offset, ...icons });
         if (!Array.isArray(page.results) || (!search && (!Number.isInteger(page.count) || page.count < 0))) throw new ToolingError('API_ERROR', 'The platform returned invalid agent pagination.');
-        data = { account: identity.username, results: page.results.map((row: any) => agent(row, environmentUid)), count: search ? page.results.length : page.count, offset: search ? 0 : offset, semantic: !!search };
+        data = { account: identity.username, results: page.results.map((row: any) => agent(row, environmentUid, input.includeIcons)), count: search ? page.results.length : page.count, offset: search ? 0 : offset, semantic: !!search };
       } else {
         const agentUid = uuid(input.agentUid);
-        const selected = agent(await call('agent.get', { agent_uid: agentUid }), environmentUid);
+        const includeIcons = input.action === 'agent-get' && input.includeIcons === true;
+        const selected = agent(await call('agent.get', { agent_uid: agentUid, ...(includeIcons ? { include_icons:true } : {}) }), environmentUid, includeIcons);
         if (selected.uid !== agentUid) throw new ToolingError('API_ERROR', 'The platform returned another agent.');
         const task = async (taskUid: string) => {
           const result = await call('a2a.get_task', { task_uid: uuid(taskUid) });
@@ -158,6 +164,7 @@ export class AgentClient {
             ...(resolved.bound_handle?.handle_unique_id ? { handleId: text(resolved.bound_handle.handle_unique_id, 255) } : {}) };
         }
         else if (input.action === 'agent-send') {
+          const messageId = input.messageId === undefined ? randomUUID() : uuid(input.messageId);
           if (typeof input.message !== 'string' || !input.message.trim() || input.message.length > 64000) throw new ToolingError('INVALID_REQUEST', 'Enter a message of 1–64000 characters.');
           if (!['message', 'task'].includes(input.responseKind) || !selected.responseKinds.includes(input.responseKind)) throw new ToolingError('UNSUPPORTED_ACTION', 'The agent does not advertise the requested response mode.');
           if (!selected.runtimeReleaseUid || selected.runtimeState === 'not_deployed') throw new ToolingError('UNSUPPORTED_ACTION', 'This agent has no deployed runtime.');
@@ -178,7 +185,7 @@ export class AgentClient {
               : input.sessionUid ? { session_uid: uuid(input.sessionUid) } : { handle_unique_id: input.handleId });
             await ready(uuid(resolved.uid));
           }
-          const reply = await call('a2a.send_message', { ...target, message: input.message, message_id: randomUUID(), response_kind: input.responseKind,
+          const reply = await call('a2a.send_message', { ...target, message: input.message, message_id: messageId, response_kind: input.responseKind,
             ...(input.responseKind === 'task' ? { completion_policy: 'poll' } : {}) }, true);
           if (uuid(reply.agent_uid) !== agentUid || reply.response_kind !== input.responseKind || (input.sessionUid && uuid(reply.agent_session_uid) !== uuid(input.sessionUid))) throw new ToolingError('API_ERROR', 'The agent response does not match this conversation.');
           data = { account: identity.username, agent: selected, ...projectReply(reply) };

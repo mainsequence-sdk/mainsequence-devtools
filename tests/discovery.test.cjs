@@ -145,3 +145,21 @@ test('a rotated refresh pair is kept when profile verification is unavailable; n
   assert.equal(f.writes.length, 1);
   assert.ok(f.calls.every(c => c.path === '/api/v1/users/me/' || c.path === '/auth/jwt-token/token/refresh/'));
 });
+
+test('local scoped checks reuse only the verified token identity and detect shared login changes', async () => {
+  const f = sessions(), scoped = await bindSessionAccount(f.session, backend, 'alice');
+  const before = f.calls.length;
+  await scoped.status(backend, false); await scoped.status(backend, false);
+  assert.equal(f.calls.length, before, 'unchanged credentials need no extra profile request');
+  f.change({ username:'alice', access:'alice-new', refresh:'alice-rotated' });
+  await scoped.status(backend, false);
+  assert.equal(f.calls.length, before + 1, 'another process rotating tokens triggers verification');
+  assert.equal(f.calls.at(-1).access, 'alice-new');
+  f.change({ username:'alice', access:'bob-access', refresh:'bob-refresh' });
+  await assert.rejects(scoped.status(backend, false), { code:'AUTH_REJECTED' });
+  f.change(null);
+  await assert.rejects(scoped.status(backend, false), { code:'NOT_AUTHENTICATED' });
+  f.change({ username:'alice', access:'alice-next', refresh:'alice-next-refresh' });
+  f.state.switchOn='verify';
+  await assert.rejects(scoped.status(backend, false), { code:'AUTH_REJECTED' });
+});

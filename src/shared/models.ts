@@ -23,7 +23,7 @@ export type ActionRequest = McpRequest | AgentRequest | OrganizationProjectReque
   })
   | (BackendSelection & { action: 'setup'; repositoryUid: string; branch: string; baseDir: string; install?: boolean });
 
-export type ErrorCode = 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
+export type ErrorCode = 'CURRENT_DIRECTORY_UNAVAILABLE' | 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'MCP_TOOL_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
 export class ToolingError extends Error {
   constructor(public readonly code: ErrorCode, message: string) { super(message); this.name = 'ToolingError'; }
 }
@@ -77,6 +77,9 @@ export interface SessionService {
   request<T>(backend: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe?: boolean, options?: { timeoutMs?: number }): Promise<T>;
   /** Optional for legacy custom transports. Scoped operations fail closed if unavailable. */
   withAccount?(backend: string, expectedAccount: string): Promise<SessionService>;
+  /** Opaque identity of the currently selected credentials, reread locally. No secrets.
+   * Optional: transports without it never reuse a cached project MCP connection. */
+  selectionIdentity?(backend: string): Promise<{ key: string; expiresAt?: number }>;
 }
 
 /** Trusted host persistence only. Credentials never cross the action-result boundary. */

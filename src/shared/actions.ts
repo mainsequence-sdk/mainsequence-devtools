@@ -1,4 +1,4 @@
-import { McpConnections, McpRequest } from './mcp';
+import { McpConnections, McpRequest, createMcpConnectionCache, type McpConnectionCache } from './mcp';
 import { AgentClient, AgentRequest, isAgentAction } from './agents';
 import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
 import { MachineSessionService } from './session';
@@ -8,9 +8,10 @@ import { OrganizationProjectClient, OrganizationProjectRequest } from './organiz
 import { setupOrganizationProject } from './organizationProjectWorkspace';
 import { bindSessionAccount } from './accountScope';
 import type { ActionData } from './discoveryTypes';
+import { currentDirectory } from './workingDirectory';
 
-export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string }) {
-  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, ...sessionOptions } = options;
+export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & { host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean; mcpConnectionsPath?: string; mcpCache?:McpConnectionCache }) {
+  const { host, session: suppliedSession, allowMcpSkills, allowLegacyProjectCredentials, mcpConnectionsPath, mcpCache=createMcpConnectionCache(), ...sessionOptions } = options;
   const session = suppliedSession ?? new MachineSessionService(host, sessionOptions);
   const env = { ...(options.env ?? process.env) };
   function dispatch<R extends ActionRequest>(request: R): Promise<ActionResult<ActionData<R>>>;
@@ -37,17 +38,18 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
         } else if (input.action === 'organization-project-setup') data = await setupOrganizationProject({ ...input, backend }, { host, session: scoped, env, signal: options.signal, state });
         else throw new ToolingError('INVALID_REQUEST', 'Unknown organization project action.');
         if (input.expectedAccount !== undefined) await scoped.status(backend, true);
-        return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Claude must attach them when its workspace session starts.' : 'Projects loaded.', data });
+        return safeResult({ schemaVersion: 1, action, status: 'success', summary: input.action === 'organization-project-setup' ? 'Project checkouts are prepared on their assigned branches. Open the workspace in your editor and grant access to its repositories.' : 'Projects loaded.', data });
       }
       if (isAgentAction(action)) {
         const backend = await resolveBackend(request.backend, undefined, env);
         return safeResult(await new AgentClient(session, { signal: options.signal, progress: host.progress?.bind(host) }).dispatch(request as AgentRequest, backend));
       }
       if (action.startsWith('mcp-')) {
-        const backend = await resolveBackend(request.backend, process.cwd(), env);
-        const input = request as McpRequest, scoped = await bindSessionAccount(session, backend, input.expectedAccount);
-        return safeResult(await new McpConnections(scoped, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs,
-          checkAccount: input.expectedAccount === undefined ? undefined : () => scoped.status(backend, true).then(() => {}) }).dispatch(input, backend));
+        // A host update may remove its old installation directory. An explicit
+        // backend (or environment override) has no dependency on that directory.
+        const directory = request.backend || env.MAINSEQUENCE_ENDPOINT ? undefined : currentDirectory();
+        const backend = await resolveBackend(request.backend, directory, env);
+        return safeResult(await new McpConnections(session, { connectionsPath: mcpConnectionsPath, env, fetch: options.fetch, signal: options.signal, requestTimeoutMs: options.requestTimeoutMs, cache:mcpCache }).dispatch(request as McpRequest, backend));
       }
       let data: unknown;
       if (['login', 'logout', 'refresh-token', 'auth-status', 'repositories'].includes(action)) {

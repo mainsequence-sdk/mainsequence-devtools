@@ -4,8 +4,7 @@ import type { McpTool } from './discoveryTypes';
 /** The platform's stateless Streamable HTTP profile; no legacy SSE endpoint. */
 export class McpTransport {
   private sequence = 0;
-  private initialized = false;
-  constructor(private readonly send: (message: Record<string, unknown>) => Promise<unknown>) {}
+  constructor(private readonly send: (message: Record<string, unknown>) => Promise<unknown>, private initialized = false) {}
 
   async initialize(): Promise<void> {
     const result = await this.request('initialize', {
@@ -132,6 +131,7 @@ export async function sendProjectMcp(url: string, token: string, message: Record
   try {
     return await readMcpResponse(await (options.fetch ?? fetch)(url, {
       method: 'POST', redirect: 'error', signal: controller.signal,
+      ...(['initialize', 'notifications/initialized', 'tools/list'].includes(String(message.method)) ? { cache: 'force-cache' as const } : {}),
       headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream',
         Authorization: 'Bearer ' + token, 'MCP-Protocol-Version': '2025-11-25' },
       body: JSON.stringify(message),

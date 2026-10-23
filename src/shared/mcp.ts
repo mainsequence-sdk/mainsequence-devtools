@@ -8,6 +8,22 @@ import { McpTransport, sendProjectMcp } from './mcpTransport';
 import { codeRepositoryBranchFromResponse } from './repositoryModels';
 import { listEnvironments } from './environments';
 import type { McpConnection, McpDiscoveryPage } from './discoveryTypes';
+import type { McpTool } from './discoveryTypes';
+import { bindSessionAccount } from './accountScope';
+
+type CachedConnection = { value:McpConnection; token:string; tools:McpTool[]; identity:string; account?:string; expiresAt:number; savedIdentity:string };
+/** Opaque, memory-only runtime. No credentials or tool results are persisted. */
+export type McpConnectionCache = Readonly<{ kind:'mainsequence-mcp-cache' }>;
+const caches = new WeakMap<McpConnectionCache, Map<string,CachedConnection>>();
+export function createMcpConnectionCache(): McpConnectionCache {
+  const cache = Object.freeze({kind:'mainsequence-mcp-cache' as const}); caches.set(cache,new Map()); return cache;
+}
+const cacheKey = (backend:string, uid:string) => JSON.stringify([backend,uid]);
+const savedIdentity = (value:McpConnection) => JSON.stringify([value.backend,value.resource_release_uid,value.mcp_connection]);
+function credentialExpiry(token:string):number {
+  // This is only a conservative cache lifetime hint; the server verifies the JWT.
+  try {const exp=JSON.parse(Buffer.from(token.split('.')[1],'base64url').toString()).exp;return typeof exp==='number' && Number.isFinite(exp) ? exp*1000 : 0;} catch{return 0;}
+}
 
 export type McpRequest = { backend?: string; environmentUid?: string; expectedAccount?: string } & (
   | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number; enrichNames?: boolean }
@@ -67,13 +83,15 @@ function storagePath(env: NodeJS.ProcessEnv): string {
   return path.join(dir, 'mcp-connections.json');
 }
 
-/** Only endpoint metadata is persisted. Release credentials exist in one invocation's memory. */
+/** Only endpoint metadata is persisted. A bounded runtime may reuse an in-memory grant. */
 export class McpConnections {
   private readonly file: string;
   private readonly secrets = new Set<string>();
-  constructor(private readonly session: SessionService & { sanitize?(text: string): string }, private readonly options: {
-    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number; checkAccount?: () => Promise<void>;
-  } = {}) { this.file = options.connectionsPath ?? storagePath(options.env ?? process.env); }
+  private session: SessionService & { sanitize?(text:string):string };
+  private checkAccount?: (fresh?:boolean)=>Promise<void>;
+  constructor(private readonly originalSession: SessionService & { sanitize?(text: string): string }, private readonly options: {
+    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number; cache?:McpConnectionCache;
+  } = {}) { this.file = options.connectionsPath ?? storagePath(options.env ?? process.env); this.session=originalSession; }
 
   private sanitize(value: any): any {
     if (typeof value === 'string') {
@@ -98,7 +116,7 @@ export class McpConnections {
   }
   private async update(change: (rows: Connection[]) => Connection[]): Promise<void> {
     this.options.signal?.throwIfAborted();
-    await this.options.checkAccount?.();
+    await this.checkAccount?.();
     await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
     const lock = this.file + '.lock', temporary = this.file + '.' + randomUUID() + '.tmp';
     let handle;
@@ -126,7 +144,16 @@ export class McpConnections {
     if (value.resource_release_uid !== releaseUid) throw new ToolingError('API_ERROR', 'The backend returned a different release.');
     return value;
   }
-  private async open(value: Connection): Promise<McpTransport> {
+  private client(value:Connection, token:string, initialized=false):McpTransport {
+    this.secrets.add(token);
+    return new McpTransport(async message => {
+      await this.checkAccount?.();
+      const result = await sendProjectMcp(value.mcp_connection.url, token, message, this.options);
+      await this.checkAccount?.();
+      return result;
+    },initialized);
+  }
+  private async open(value: Connection): Promise<{client:McpTransport; token:string; expiresAt:number}> {
     const grant = await this.session.request<any>(value.backend, 'GET',
       '/api/v1/resource-releases/' + value.resource_release_uid + '/exchange-launch/');
     if (grant?.mode !== 'token' || grant.release_kind !== 'fastapi' || typeof grant.token !== 'string' || !grant.token || /[\r\n]/.test(grant.token)) {
@@ -136,14 +163,9 @@ export class McpConnections {
     if (new URL(endpoint(grant.rpc_url)).origin !== new URL(value.mcp_connection.url).origin) {
       throw new ToolingError('API_ERROR', 'The release credential targets a different endpoint.');
     }
-    const client = new McpTransport(async message => {
-      await this.options.checkAccount?.();
-      const result = await sendProjectMcp(value.mcp_connection.url, grant.token, message, this.options);
-      await this.options.checkAccount?.();
-      return result;
-    });
+    const client = this.client(value,grant.token);
     await client.initialize();
-    return client;
+    return {client,token:grant.token,expiresAt:credentialExpiry(grant.token)};
   }
   /** The release's name and repository from the release directory and its branch. Whatever
    * cannot be read is left out: labels never make a working MCP unavailable. */
@@ -185,7 +207,7 @@ export class McpConnections {
         } catch (error) {
           this.options.signal?.throwIfAborted();
           if (error instanceof ToolingError && error.code === 'CANCELLED') throw error;
-          await this.options.checkAccount?.();
+          await this.checkAccount?.();
           // Unavailable optional names must not hide usable endpoints.
         }
       }
@@ -219,9 +241,40 @@ export class McpConnections {
   }
   async dispatch(request: McpRequest, inputBackend: string): Promise<ActionResult> {
     let callStarted = false, resultData: unknown;
+    let key:string|undefined, reused=false;
+    let retained:CachedConnection|undefined;
+    const cache=this.options.cache ? caches.get(this.options.cache) : undefined;
     try {
       const backend = requireBackend(inputBackend);
       this.options.signal?.throwIfAborted();
+      let cached:CachedConnection|undefined, selected:{key:string;expiresAt?:number}|undefined;
+      if ('releaseUid' in request) {
+        key=cacheKey(backend,uuid(request.releaseUid));
+        if (cache && request.action==='mcp-remove') cache.delete(key);
+        else if (cache) {
+          for(const [id,item] of cache) if(item.expiresAt<=Date.now()) cache.delete(id);
+          selected=await this.originalSession.selectionIdentity?.(backend);
+          cached=cache.get(key);
+          if(cached && (cached.identity!==selected?.key || cached.account!==request.expectedAccount || !['mcp-tools','mcp-call'].includes(request.action))) {cache.delete(key);cached=undefined;}
+          if(cached) {
+            const saved=(await this.read()).find(row=>row.backend===backend && row.resource_release_uid===request.releaseUid);
+            if(!saved || savedIdentity(saved)!==cached.savedIdentity) {cache.delete(key);cached=undefined;}
+          }
+        }
+      }
+      reused=Boolean(cached);
+      if(cached) {
+        const identity=cached.identity;
+        this.checkAccount=async()=>{
+          this.options.signal?.throwIfAborted();
+          if((await this.originalSession.selectionIdentity?.(backend))?.key!==identity) throw new ToolingError('AUTH_REJECTED','The shared MainSequence login changed. Refresh the current view.');
+        };
+        await this.checkAccount();
+      } else {
+        this.session=await bindSessionAccount(this.originalSession,backend,request.expectedAccount);
+        this.checkAccount=request.expectedAccount===undefined ? undefined : (fresh=false)=>this.session.status(backend,fresh).then(()=>{});
+        if(cache && key) selected=await this.originalSession.selectionIdentity?.(backend);
+      }
       if (request.action === 'mcp-list' && request.readOnly !== undefined && typeof request.readOnly !== 'boolean'
         || request.action === 'mcp-discover' && request.enrichNames !== undefined && typeof request.enrichNames !== 'boolean') {
         throw new ToolingError('INVALID_REQUEST', 'Discovery and listing options must be booleans.');
@@ -283,16 +336,21 @@ export class McpConnections {
           await this.update(rows => rows.filter(row => !(row.backend === backend && row.resource_release_uid === releaseUid)));
           data = { resource_release_uid: releaseUid }; summary = 'The saved connection was removed.';
         } else {
-          let value = await this.current(backend, releaseUid);
+          let value = cached?.value ?? await this.current(backend, releaseUid);
+          let savedSnapshot=savedIdentity(value);
           requireEnvironment(value);
           if (request.action !== 'mcp-add') {
             const saved = (await this.read()).find(row => row.backend === backend && row.resource_release_uid === releaseUid);
             if (!saved) throw new ToolingError('INVALID_REQUEST', 'Add this MCP connection before using it.');
             if (saved.mcp_connection.url !== value.mcp_connection.url) throw new ToolingError('INVALID_REQUEST', 'The MCP endpoint changed. Add the release again to confirm its new endpoint.');
+            savedSnapshot=savedIdentity(saved);
             value = this.labelled(value, labels(saved));
           }
-          const client = await this.open(value);
-          const tools = await client.tools();
+          const opened = cached ? {client:this.client(value,cached.token,true),token:cached.token,expiresAt:cached.expiresAt} : await this.open(value);
+          const client=opened.client;
+          // An explicit catalog read always refreshes tools. A following call reuses it.
+          let tools = cached && request.action==='mcp-call' ? cached.tools : await client.tools();
+          if(cached && request.action==='mcp-call' && !tools.some(tool=>tool.name===request.tool)) tools=await client.tools();
           if (request.action === 'mcp-add') {
             value = this.labelled(value, await this.resolveLabels(value));
             await this.update(rows => [...rows.filter(row => !(row.backend === backend && row.resource_release_uid === releaseUid)), value]);
@@ -307,18 +365,37 @@ export class McpConnections {
             const output = await client.request('tools/call', { name: request.tool, arguments: request.arguments });
             if (!output || !Array.isArray(output.content)) throw new ToolingError('API_ERROR', 'The MCP tool returned an invalid result.');
             resultData = output;
-            if (output.isError) throw new ToolingError('API_ERROR', 'The MCP tool reported an error. Inspect its result before retrying.');
+            if (output.isError) {
+              await this.checkAccount?.(!reused);
+              throw new ToolingError('MCP_TOOL_ERROR', 'The connected MCP tool returned an error. Its original content and structuredContent are included in the result.');
+            }
             data = output; summary = 'The MCP tool completed.';
           } else throw new ToolingError('INVALID_REQUEST', 'Unknown MCP action.');
+          if(cache && key && selected && (await this.originalSession.selectionIdentity?.(backend))?.key===selected.key) {
+            // Check local selection again before retaining a grant; never extend a lease
+            // on a warm call. Unknown/expired credential lifetimes are not cached.
+            // A cold setup may renew the same account while resolving labels or
+            // checking access. The account-bound checks below remain authoritative;
+            // skip retaining an old identity instead of failing an already saved connection.
+            const expiresAt=cached?.expiresAt ?? Math.min(Date.now()+60_000,opened.expiresAt-5_000,(selected.expiresAt ?? Infinity)-5_000);
+            if(expiresAt>Date.now()) {
+              retained={value,token:opened.token,tools,identity:selected.key,account:request.expectedAccount,expiresAt,savedIdentity:savedSnapshot};
+            }
+          }
         }
       }
-      await this.options.checkAccount?.();
+      await this.checkAccount?.(!reused);
+      if(cache && key && retained && retained.expiresAt>Date.now()) {
+        while(cache.size>=32 && !cache.has(key)) cache.delete(cache.keys().next().value!);
+        cache.set(key,retained);
+      }
       return this.sanitize({ schemaVersion: 1, action: request.action, status: 'success', summary, data });
     } catch (error) {
       const failure = this.options.signal?.aborted ? new ToolingError('CANCELLED', 'The MCP action was cancelled.')
         : error instanceof ToolingError ? error : new ToolingError('INTERNAL_ERROR', 'The MCP action could not complete.');
+      if(cache && key && failure.code!=='MCP_TOOL_ERROR') cache.delete(key);
       return this.sanitize({ schemaVersion: 1, action: request.action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure',
-        summary: failure.message, error: { code: failure.code, message: failure.message }, ...(resultData === undefined ? {} : { data: resultData }),
+        summary: failure.message, error: { code: failure.code, message: failure.message }, ...(resultData === undefined || ['AUTH_REJECTED', 'NOT_AUTHENTICATED'].includes(failure.code) ? {} : { data: resultData }),
         ...(callStarted ? { effects: { state: 'partial-or-uncertain', message: 'The tool may have changed remote state. No automatic retry was attempted; verify the outcome before repeating it.' } } : {}) });
     } finally { this.secrets.clear(); }
   }
