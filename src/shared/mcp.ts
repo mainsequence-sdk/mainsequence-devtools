@@ -1,10 +1,11 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { ActionResult, SessionService, ToolingError } from './models';
 import { requireBackend } from './session';
 import { McpTransport, sendProjectMcp } from './mcpTransport';
+import { mainSequenceStateDirectory } from './stateDirectory';
+import { DEFAULT_PROJECT_REQUEST_TIMEOUT_MS, projectToolTimeoutMs } from './projectTools';
 import { codeRepositoryBranchFromResponse } from './repositoryModels';
 import { listEnvironments } from './environments';
 import type { McpConnection, McpDiscoveryPage } from './discoveryTypes';
@@ -29,6 +30,11 @@ export type McpRequest = { backend?: string; environmentUid?: string; expectedAc
   | { action: 'mcp-discover'; search?: string; limit?: number; offset?: number; enrichNames?: boolean }
   | { action: 'mcp-list'; readOnly?: boolean }
   | { action: 'mcp-environments' }
+  /** The shared project-tool registry (ADR 0004): definitions and bindings from the on-disk catalog,
+   * re-reading the saved connections' catalogs when `refresh` is true (if stale) or 'force'. */
+  | { action: 'mcp-catalog'; refresh?: boolean | 'force' }
+  /** `mcp-call`, answered in the host-neutral tool result shape (`projectToolResult`). */
+  | { action: 'mcp-tool-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
   | { action: 'mcp-add' | 'mcp-remove' | 'mcp-tools'; releaseUid: string }
   | { action: 'mcp-call'; releaseUid: string; tool: string; arguments: Record<string, unknown> }
 );
@@ -78,9 +84,7 @@ function connection(backend: string, row: any): Connection {
       ...(typeof c.organization_environment_name === 'string' && c.organization_environment_name.trim() ? { organization_environment_name: c.organization_environment_name.trim() } : {}), active_revision_uid: uuid(c.active_revision_uid) } };
 }
 function storagePath(env: NodeJS.ProcessEnv): string {
-  const dir = process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'MainSequenceCLI')
-    : process.platform === 'win32' ? path.join(env.APPDATA || os.homedir(), 'MainSequenceCLI') : path.join(os.homedir(), '.config', 'mainsequence');
-  return path.join(dir, 'mcp-connections.json');
+  return path.join(mainSequenceStateDirectory(env), 'mcp-connections.json');
 }
 
 /** Only endpoint metadata is persisted. A bounded runtime may reuse an in-memory grant. */
@@ -90,7 +94,9 @@ export class McpConnections {
   private session: SessionService & { sanitize?(text:string):string };
   private checkAccount?: (fresh?:boolean)=>Promise<void>;
   constructor(private readonly originalSession: SessionService & { sanitize?(text: string): string }, private readonly options: {
-    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number; cache?:McpConnectionCache;
+    connectionsPath?: string; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; signal?: AbortSignal; requestTimeoutMs?: number;
+    /** The HTTP budget of one project MCP request (default 120 s); backend requests keep `requestTimeoutMs`. */
+    projectRequestTimeoutMs?: number; cache?:McpConnectionCache;
   } = {}) { this.file = options.connectionsPath ?? storagePath(options.env ?? process.env); this.session=originalSession; }
 
   private sanitize(value: any): any {
@@ -144,11 +150,12 @@ export class McpConnections {
     if (value.resource_release_uid !== releaseUid) throw new ToolingError('API_ERROR', 'The backend returned a different release.');
     return value;
   }
+  private get projectTimeoutMs(): number { return this.options.projectRequestTimeoutMs ?? DEFAULT_PROJECT_REQUEST_TIMEOUT_MS; }
   private client(value:Connection, token:string, initialized=false):McpTransport {
     this.secrets.add(token);
-    return new McpTransport(async message => {
+    return new McpTransport(async (message, request) => {
       await this.checkAccount?.();
-      const result = await sendProjectMcp(value.mcp_connection.url, token, message, this.options);
+      const result = await sendProjectMcp(value.mcp_connection.url, token, message, { fetch: this.options.fetch, signal: this.options.signal, timeoutMs: request?.timeoutMs ?? this.projectTimeoutMs });
       await this.checkAccount?.();
       return result;
     },initialized);
@@ -247,6 +254,7 @@ export class McpConnections {
     try {
       const backend = requireBackend(inputBackend);
       this.options.signal?.throwIfAborted();
+      if (request.action === 'mcp-catalog' || request.action === 'mcp-tool-call') throw new ToolingError('INVALID_REQUEST', 'mcp-catalog and mcp-tool-call are dispatched by createDevTools(), not by the connection client.');
       let cached:CachedConnection|undefined, selected:{key:string;expiresAt?:number}|undefined;
       if ('releaseUid' in request) {
         key=cacheKey(backend,uuid(request.releaseUid));
@@ -362,7 +370,9 @@ export class McpConnections {
             if (!request.arguments || typeof request.arguments !== 'object' || Array.isArray(request.arguments)) throw new ToolingError('INVALID_REQUEST', 'Tool arguments must be a JSON object.');
             this.options.signal?.throwIfAborted();
             callStarted = true;
-            const output = await client.request('tools/call', { name: request.tool, arguments: request.arguments });
+            // A tool that advertises a longer run (`_meta["mainsequence.ai/timeout-seconds/v1"]`) gets it, capped at 300 s.
+            const output = await client.request('tools/call', { name: request.tool, arguments: request.arguments },
+              { timeoutMs: projectToolTimeoutMs(tools.find(tool => tool.name === request.tool), this.projectTimeoutMs) });
             if (!output || !Array.isArray(output.content)) throw new ToolingError('API_ERROR', 'The MCP tool returned an invalid result.');
             resultData = output;
             if (output.isError) {

@@ -1,7 +1,7 @@
 // Extracted from ms-vscode-extension/src/api.ts and authSession.ts (0.1.45).
 // Host-independent machine mode; the VS Code legacy fallback stays with that host.
 import * as crypto from 'crypto';
-import { readMcpResponse } from './mcpTransport';
+import { describeSeconds, failureReason, readMcpResponse } from './mcpTransport';
 import * as http from 'http';
 import { normalizeBackendUrl } from './config';
 import { clearSession, CredentialStore, ForeignEntryError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
@@ -142,7 +142,9 @@ export class MachineSessionService implements SessionService {
     const controller = new AbortController();
     const abort = () => controller.abort();
     this.options.signal?.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(abort, this.options.requestTimeoutMs ?? timeoutMs ?? 30_000);
+    const budget = this.options.requestTimeoutMs ?? timeoutMs ?? 30_000;
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, budget);
     try {
       const response = await (this.options.fetch ?? fetch)(backend + apiPath, {
         method, redirect: 'error', signal: controller.signal,
@@ -156,14 +158,15 @@ export class MachineSessionService implements SessionService {
         body: body === undefined ? undefined : JSON.stringify(body)
       });
       if (response.status === 401 || response.status === 403) throw new ToolingError('AUTH_REJECTED', 'The backend rejected the selected credentials.');
-      if (!response.ok) throw new ToolingError('API_ERROR', `The backend returned HTTP ${response.status}.`);
-      if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>) as T;
+      if (!response.ok) throw new ToolingError('API_ERROR', `The backend ${backend} returned HTTP ${response.status} for ${method} ${apiPath}.`);
+      if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>, 'platform MCP ' + backend) as T;
       if (response.status === 204) return undefined as T;
       try { return await response.json() as T; } catch { throw new ToolingError('API_ERROR', 'The backend returned an invalid JSON response.'); }
     } catch (error) {
       if (this.options.signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
       if (error instanceof ToolingError) throw error;
-      throw new ToolingError('BACKEND_UNREACHABLE', 'The backend could not be reached. The saved session has been kept.');
+      throw new ToolingError('BACKEND_UNREACHABLE', `The backend ${backend} could not be reached for ${method} ${apiPath}: `
+        + (timedOut ? `the request timed out after ${describeSeconds(budget)} s` : failureReason(error) || 'the connection failed') + '. The saved session has been kept.');
     } finally {
       clearTimeout(timer);
       this.options.signal?.removeEventListener('abort', abort);

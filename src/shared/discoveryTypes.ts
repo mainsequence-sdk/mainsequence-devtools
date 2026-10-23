@@ -2,6 +2,7 @@ import type { ActionRequest, SessionStatus } from './models';
 import type { PlatformAgent } from './agents';
 import type { EnvironmentSummary } from './environments';
 import type { OrganizationEnvironment, OrganizationProjectPage } from './organizationProjects';
+import type { ProjectToolCatalogView, ProjectToolResult } from './projectTools';
 
 export type McpConnection = {
   backend: string; resource_release_uid: string; name?: string; display_name?: string; code_repository_branch_uid?: string;
@@ -28,6 +29,8 @@ export type DiscoveryResultMap = {
   'mcp-discover': McpDiscoveryPage;
   'mcp-list': McpConnection[];
   'mcp-tools': McpCatalog;
+  'mcp-catalog': ProjectToolCatalogView;
+  'mcp-tool-call': ProjectToolResult;
 };
 export type ActionData<R extends ActionRequest> = R extends { action: infer A }
   ? A extends keyof DiscoveryResultMap ? DiscoveryResultMap[A] : unknown : unknown;

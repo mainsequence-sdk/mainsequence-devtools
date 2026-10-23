@@ -7,6 +7,7 @@ import { requireBackend } from './session';
 import { repositorySshKeyIdentity } from './repositoryIdentity';
 import { RepositoryClient } from './repositoryClient';
 import { codeRepositoryBranchFromResponse, codeRepositoryFromResponse, gitHubRepositoryBindingFromResponse, CodeRepository, CodeRepositoryGitContextResolution } from './repositoryModels';
+import { mainSequenceStateDirectory } from './stateDirectory';
 
 export async function readProjectEnv(root: string): Promise<Record<string, string>> {
   let text: string;
@@ -36,8 +37,7 @@ export async function resolveBackend(explicit?: string, root?: string, env: Node
 /** Resolve non-secret workspace settings without requiring a session or writing configuration. */
 export async function readWorkspacePreferences(options: { env?: NodeJS.ProcessEnv; configPath?: string; homeDir?: string } = {}): Promise<{ backend: string; baseDir: string }> {
   const env = options.env ?? process.env, home = options.homeDir ?? os.homedir();
-  const directory = process.platform === 'darwin' ? path.join(home, 'Library', 'Application Support', 'MainSequenceCLI')
-    : process.platform === 'win32' ? path.join(env.APPDATA || home, 'MainSequenceCLI') : path.join(home, '.config', 'mainsequence');
+  const directory = mainSequenceStateDirectory(env, home);
   const config = await fs.readFile(options.configPath ?? path.join(directory, 'config.json'), 'utf8')
     .then(text => JSON.parse(text)).catch(() => ({}));
   const folder = config?.mainsequence_path;

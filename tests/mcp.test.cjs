@@ -115,7 +115,7 @@ async function fixture(t) {
   });
   const file = path.join(dir, 'connections.json');
   const create = extra => createDevTools({ host: createNodeHost(), env: { MAINSEQUENCE_ENDPOINT: backend, MAINSEQUENCE_ACCESS_TOKEN: 'private-platform-token' },
-    mcpConnectionsPath: file, requestTimeoutMs: 500, ...extra });
+    mcpConnectionsPath: file, requestTimeoutMs: 500, projectRequestTimeoutMs: 500, ...extra });
   const dispatch = (action, extra = {}, instance = create()) => instance.dispatch({ action, backend, releaseUid: uid, ...extra });
   return { dir, file, uid, secondUid, branchUid, backend, row, project, calls, state, create, dispatch, tool };
 }

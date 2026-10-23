@@ -29,6 +29,13 @@ export type { McpRequest } from './shared/mcp';
 export { createMcpConnectionCache } from './shared/mcp';
 export type { McpConnectionCache } from './shared/mcp';
 export type { ActionData, DiscoveryResultMap, AgentDirectory, McpConnection, McpDiscoveryPage, McpCatalog, McpTool } from './shared/discoveryTypes';
+// The shared project-tool registry (ADR 0004): one name, definition, result shape and catalog for every host.
+export { mainSequenceStateDirectory } from './shared/stateDirectory';
+export { projectToolName, isProjectToolName, projectToolConnection, projectToolConnectionLabel, projectToolDefinition, projectToolDefinitions, projectToolBinding, projectToolRegistration,
+  projectToolResult, projectToolTimeoutMs, readProjectToolCatalog, readProjectToolCatalogFile, projectToolCatalogPath, createProjectToolCatalog,
+  PROJECT_TOOL_PREFIX, MAX_PROJECT_TOOLS_PER_CONNECTION, PROJECT_TOOL_TIMEOUT_HINT, DEFAULT_PROJECT_REQUEST_TIMEOUT_MS, MAX_PROJECT_TOOL_TIMEOUT_MS } from './shared/projectTools';
+export type { ProjectToolBinding, ProjectToolConnection, ProjectToolCatalog, ProjectToolCatalogOptions, ProjectToolCatalogState, ProjectToolCatalogStore, ProjectToolCatalogView,
+  ProjectToolDefinition, ProjectToolDispatch, ProjectToolResult, ProjectToolScope } from './shared/projectTools';
 export { listEnvironments } from './shared/environments';
 export type { EnvironmentSummary } from './shared/environments';
 export { bindSessionAccount } from './shared/accountScope';
