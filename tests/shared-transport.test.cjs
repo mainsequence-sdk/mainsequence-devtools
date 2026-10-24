@@ -113,3 +113,13 @@ test('a disconnected session lease owner releases a waiting client',async t=>{
  // fixture cleanup uses the surviving client after the first was intentionally closed.
  const pid=(await other.status()).pid;process.kill(pid);
 });
+
+
+test('directory reads stay cached across thirty seconds and expire after sixty seconds', {timeout:70000}, async t=>{
+ const f=await fixture(t),headers={Authorization:'Bearer '+token(3600)},url=f.url+'/api/v1/code-repositories/';
+ await f.client.fetch(url,{headers});
+ await new Promise(resolve=>setTimeout(resolve,31000));
+ await f.client.fetch(url,{headers});assert.equal((await f.client.status()).requests,1);
+ await new Promise(resolve=>setTimeout(resolve,30000));
+ await f.client.fetch(url,{headers});assert.equal((await f.client.status()).requests,2);
+});

@@ -168,3 +168,15 @@ test('per-request timeout accommodates the advertised agent deadline and rejects
   }
   assert.equal(calls.length, count);
 });
+
+
+test('only the canonical deploy-key empty HTTP 200 bypasses JSON parsing and is never retried',async()=>{
+ const calls=[];
+ const session=new MachineSessionService(createNodeHost(),{env:{MAINSEQUENCE_ENDPOINT:'https://fixture.example',MAINSEQUENCE_ACCESS_TOKEN:'fixture-access'},store:null,fetch:async(url,options)=>{calls.push({url,method:options.method});return new Response(new URL(url).search?'not JSON':null,{status:200});}});
+ const backend='https://fixture.example',path='/api/v1/code-repositories/repo/add-deploy-key/';
+ assert.equal(await session.request(backend,'POST',path,{key_title:'fixture',public_key:'ssh-ed25519 fixture'},false),undefined);
+ await assert.rejects(session.request(backend,'GET','/api/v1/code-repositories/'),error=>error.code==='API_ERROR');
+ await assert.rejects(session.request(backend,'POST','/api/v1/another-action/',{},false),error=>error.code==='API_ERROR');
+ await assert.rejects(session.request(backend,'POST',path+'?malformed=1',{},false),error=>error.code==='API_ERROR');
+ assert.equal(calls.filter(call=>call.url.endsWith(path)).length,1);
+});

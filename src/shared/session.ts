@@ -166,7 +166,11 @@ export class MachineSessionService implements SessionService {
       if (!response.ok) throw new ToolingError('API_ERROR', `The backend ${backend} returned HTTP ${response.status} for ${method} ${apiPath}.`);
       if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>, 'platform MCP ' + backend) as T;
       if (response.status === 204) return undefined as T;
-      try { return await response.json() as T; } catch { throw new ToolingError('API_ERROR', 'The backend returned an invalid JSON response.'); }
+      // The deploy-key action's canonical success is HTTP 200 with no body.
+      // Keep JSON mandatory on reads and on every other API contract.
+      const raw = await response.text();
+      if (method === 'POST' && response.status === 200 && /^\/api\/v1\/code-repositories\/[^/]+\/add-deploy-key\/$/.test(apiPath) && raw === '') return undefined as T;
+      try { return JSON.parse(raw) as T; } catch { throw new ToolingError('API_ERROR', 'The backend returned an invalid JSON response.'); }
     } catch (error) {
       if (this.options.signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
       if (error instanceof ToolingError) throw error;

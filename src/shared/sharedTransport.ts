@@ -117,11 +117,11 @@ export function createSharedTransport(options: { directory?: string } = {}) {
 
 function cacheTtl(request: WireRequest): number {
   const url = new URL(request.url);
-  if (request.method === 'POST') return request.read ? 30_000 : 0;
+  if (request.method === 'POST') return request.read ? 60_000 : 0;
   if (request.method !== 'GET') return 0;
   if (url.pathname === '/api/v1/users/me/') return 5_000;
   if (/^\/api\/v1\/command-center\/agents\/[a-f0-9-]+\/icon\/$/.test(url.pathname)) return 300_000;
-  if (/^\/api\/v1\/(organization-environments|command-center\/agents|code-repositories|code-repository-branches|organization-projects)\//.test(url.pathname)) return 30_000;
+  if (/^\/api\/v1\/(organization-environments|command-center\/agents|code-repositories|code-repository-branches|organization-projects)\//.test(url.pathname)) return 60_000;
   return 0;
 }
 function readKey(request: WireRequest): string {
