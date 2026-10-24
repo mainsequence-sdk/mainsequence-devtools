@@ -198,7 +198,9 @@ Raw SDK output is private and is not included in results or hook output. Progres
 
 The Codex plugin (`mainsequence` in the `mainsequence` marketplace, npm package `@dev-mainsequence/codex-plugin`) is built, verified and released from [mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin). It vendors the exact pinned devtools package into its artifact, so an installed plugin needs neither this checkout nor an npm download at execution time. Its hook runs the `/ms` slash-menu commands before inference, and its `mainsequence-mcp` skill exposes the MCP client above in conversation.
 
-The marketplace file `.agents/plugins/marketplace.json` stays in this repository because people added it with `codex plugin marketplace add mainsequence-sdk/mainsequence-devtools`. It points at the published plugin package. Devtools 0.2.8 was the last package that carried the plugin itself, under the former name `mainsequence-devtools`; the plugin repository's README explains the migration.
+The Codex marketplace is maintained in the Codex plugin repository. This shared library
+repository does not host a plugin catalog. Follow the [Codex installation and source
+migration instructions](https://github.com/mainsequence-sdk/mainsequence-codex-plugin#install).
 
 ## Reusable API
 
@@ -222,7 +224,7 @@ npm run release:check
 node scripts/verify-sdk-interop.cjs /path/to/mainsequence-sdk /path/to/command-center-sdk
 ```
 
-`release:check` type-checks, builds, runs the tests, checks release metadata and the Codex marketplace file, packs the npm archive into `artifacts/` and verifies it from an isolated consumer. The Codex host checks moved to the plugin repository with the plugin.
+`release:check` type-checks, builds, runs the tests, checks release metadata and the absence of host/plugin catalogs, packs the npm archive into `artifacts/` and verifies it from an isolated consumer. The Codex host checks moved to the plugin repository with the plugin.
 
 Tests use a loopback fixture backend, synthetic in-memory store entries, stand-ins for native store programs, installed-CLI fixtures, and temporary Git repositories. They never log in to a real backend or read/write the user's credentials. Loopback networking must be permitted to run the browser tests. The parser, tokenizer and terminal runner have their own suite in `tests/arguments.test.cjs`, since host runners depend on them.
 

@@ -2,6 +2,7 @@
 
 - **Status:** Accepted; implemented by devtools 0.3.0 and Codex plugin 0.3.0.
 - **Date:** 2026-10-21
+- **Amended:** 2026-10-24: the owner requires the Codex marketplace to live in the Codex repository; remove this repository’s catalog without retaining a compatibility entry.
 - **Scope:** Ownership and release of the Codex host integration.
 
 ## Context
@@ -50,11 +51,14 @@ package `files` list and `.gitignore` carried plugin-only paths.
    The owner also decided to remove the old marketplace entry rather than keep it pinned
    at 0.2.8. Users install the new entry, review and trust its hook, and remove the old
    plugin; the Codex repository's README carries that migration note.
-4. The marketplace file `.agents/plugins/marketplace.json` stays in this repository,
-   because people added the marketplace by this repository's URL. Its single entry becomes
-   `mainsequence` with `source.package` `@dev-mainsequence/codex-plugin` once that package
-   is published; until then it keeps pointing at devtools 0.2.8, the last package that
-   carries the plugin, and `scripts/check-release.cjs` refuses any newer devtools pin.
+4. **Marketplace ownership amended 2026-10-24.** The marketplace file
+   `.agents/plugins/marketplace.json` belongs to `mainsequence-codex-plugin`, alongside
+   its installation documentation and catalog validation. Remove the catalog here;
+   do not retain a compatibility marketplace in shared devtools. New installs add
+   `mainsequence-sdk/mainsequence-codex-plugin`. Existing users replace the configured
+   `mainsequence` marketplace source, keeping the same plugin ID and published npm
+   archive. The Codex README owns those migration instructions. This supersedes the
+   original decision to keep the catalog here for existing repository URLs.
 5. Versions keep advancing from what people have installed: devtools 0.3.0 and Codex
    plugin 0.3.0.
 
@@ -64,20 +68,20 @@ package `files` list and `.gitignore` carried plugin-only paths.
   is on npm, after which they may adopt it independently.
 - A devtools release no longer changes anything in Codex. A Codex release pins a
   published devtools version; a change that needs both lands as a devtools release
-  first, then a plugin release, then the marketplace change here.
+  first, then a plugin release, then the marketplace change in the Codex repository.
 - `docs/adr/0002` and `docs/conversational-mcp.md` moved with the plugin; stubs here point
   at their new location. The MCP client itself (the `mcp-*` actions) remains shared code.
 - Codex's `ms-devtools` bin and the shared package's bin have the same name. Installing
   both globally is unsupported; the plugin's copy is meant for Codex, the shared one for
   terminals.
 
-## Publish order
+## Publish order (catalog location amended 2026-10-24)
 
 1. Tag `v0.3.0` here; the release workflow publishes `@dev-mainsequence/devtools@0.3.0`
    with provenance.
 2. Confirm the Codex repository's lockfile integrity matches the registry archive, then
    tag `v0.3.0` there; its release workflow publishes `@dev-mainsequence/codex-plugin@0.3.0`.
-3. Merge the marketplace change here so `codex plugin marketplace upgrade` offers
+3. Merge the marketplace change in the Codex repository so `codex plugin marketplace upgrade` offers
    `mainsequence@mainsequence` from the published package.
 
 ## Verification

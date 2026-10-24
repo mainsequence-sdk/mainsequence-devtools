@@ -42,14 +42,14 @@ Review and trust the current hook definition in Codex (`/hooks` in the CLI). Sta
 
 After installation, run `node scripts/verify-codex-host.cjs` for an opt-in host integration check. It creates ephemeral Codex sessions, disables the MainSequence MCP server for those sessions, and directs inference to a local counted HTTP fixture. It verifies native `ms` skill registration and exercises help, failures, and valid SDK sync commands that refresh dependency files in temporary repositories without changing their Git state or contacting the backend. Handled commands make zero model requests, including while sync is running; ordinary prompts pass through to the offline fixture. The default check uses no live MainSequence authentication. Optionally set `MAINSEQUENCE_CODEX_SYNC_PROJECT=/absolute/project/path` to check, with the read-only `status` command, that a real project's installed SDK offers the dependency-only sync; this changes nothing in that project. No check contacts a real model endpoint.
 
-## Install the published release
+## Install the published Codex release
 
-```sh
-codex plugin marketplace add mainsequence-sdk/mainsequence-devtools
-codex plugin add mainsequence-devtools@mainsequence
-```
-
-The committed `.agents/plugins/marketplace.json` points to the exact npm version. Codex installs the npm archive without running lifecycle scripts; the archive already includes its compiled runner and plugin files. Users need Node 22+, plus the target project's SDK and action-specific tools for project operations. Login/status can run before either SDK exists.
+Current installation instructions and the public marketplace are maintained in
+[mainsequence-codex-plugin](https://github.com/mainsequence-sdk/mainsequence-codex-plugin#install).
+The former Codex marketplace in this shared repository was removed on 2026-10-24.
+Use the Codex repository’s instructions to replace an existing marketplace source.
+The historical 0.2.x package details elsewhere in this document are not current
+installation instructions.
 
 See [Codex plugin packaging and npm sources](https://developers.openai.com/plugins/build/plugins) and [plugin commands](https://learn.chatgpt.com/docs/developer-commands).
 
