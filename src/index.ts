@@ -5,6 +5,7 @@ export { sessionAccount, openCredentialStore } from './shared/machineSession';
 export type { CredentialStore } from './shared/machineSession';
 export type { ActionRequest, ActionResult, ActionCapability, ProjectContext, ProjectType, SessionStatus, SessionService, HostServices, ProcessSpec, ProcessResult, ErrorCode } from './shared/models';
 export { ToolingError } from './shared/models';
+export type { CredentialStoreFailureReason } from './shared/credentialStoreFailure';
 export { createSharedTransport } from './shared/sharedTransport';
 export type { SharedTransportStatus, SessionLock } from './shared/sharedTransport';
 

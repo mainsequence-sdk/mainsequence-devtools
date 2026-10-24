@@ -4,10 +4,17 @@ import * as crypto from 'crypto';
 import { describeSeconds, failureReason, readMcpResponse } from './mcpTransport';
 import * as http from 'http';
 import { normalizeBackendUrl } from './config';
-import { clearSession, CredentialStore, ForeignEntryError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
+import { clearSession, CredentialStore, CredentialStoreError, MachineSession, openCredentialStore, readSession, saveSession } from './machineSession';
 import { HostServices, SessionService, SessionStatus, SessionPersistence, ToolingError } from './models';
 import { validateExpectedAccount } from './accountScope';
 import type { SessionLock } from './sharedTransport';
+import { credentialStoreFailure } from './credentialStoreFailure';
+
+function storeFailure(error: unknown, fallback: string, code: 'STORE_ERROR' | 'PERSISTENCE_FAILED' = 'STORE_ERROR'): ToolingError {
+  const diagnostic = credentialStoreFailure(error instanceof CredentialStoreError || error instanceof ToolingError ? error.reason : undefined);
+  return new ToolingError(code, diagnostic
+    ? (code === 'PERSISTENCE_FAILED' ? fallback + ' ' : '') + diagnostic.message : fallback, diagnostic?.reason);
+}
 
 class AccountChangedError extends ToolingError {
   constructor() { super('AUTH_REJECTED', 'The MainSequence account or session changed. Refresh the current view before continuing.'); }
@@ -107,9 +114,7 @@ export class MachineSessionService implements SessionService {
       return value ? this.remember(value) : null;
     } catch (error) {
       if (error instanceof ToolingError) throw error;
-      throw new ToolingError('STORE_ERROR', error instanceof ForeignEntryError
-        ? 'The saved entry belongs to an older tool. Sign in to replace it.'
-        : 'The machine session could not be read. Check that the credential store is unlocked and available.');
+      throw storeFailure(error, 'The machine session could not be read. Check that the credential store is available.');
     }
   }
   private environment(backend: string): MachineSession | null {
@@ -218,8 +223,8 @@ export class MachineSessionService implements SessionService {
       else saveSession(this.requireStore(), backend, session);
       const saved = await this.saved(backend);
       if (!saved || saved.access !== session.access || saved.refresh !== session.refresh) throw new Error('verification failed');
-    } catch {
-      throw new ToolingError('PERSISTENCE_FAILED', 'Authorization completed but the machine session could not be saved and verified.');
+    } catch (error) {
+      throw storeFailure(error, 'Authorization completed but the machine session could not be saved and verified.', 'PERSISTENCE_FAILED');
     }
   }
   async status(input: string, check = false): Promise<SessionStatus> {
@@ -353,7 +358,7 @@ export class MachineSessionService implements SessionService {
     } catch { /* local logout is still useful offline; report revocation separately */ }
     if (this.options.signal?.aborted) throw new ToolingError('CANCELLED', 'The action was cancelled.');
     try { if (this.options.persistence) await this.options.persistence.remove(backend); else clearSession(this.requireStore(), backend); }
-    catch { throw new ToolingError('STORE_ERROR', 'The machine session could not be removed.'); }
+    catch (error) { throw storeFailure(error, 'The machine session could not be removed.'); }
     return { revoked };
   }
   async login(input: string): Promise<SessionStatus> {
@@ -361,7 +366,9 @@ export class MachineSessionService implements SessionService {
     if (!this.options.persistence) this.requireStore();
     // Probe before opening the browser. An old marked entry can be replaced by explicit login.
     try { await this.saved(backend); }
-    catch (error) { if (!(error instanceof ForeignEntryError) && !(error instanceof ToolingError && error.code === 'STORE_ERROR' && error.message.includes('older tool'))) throw new ToolingError('STORE_ERROR', 'The credential store is unavailable. Unlock it before signing in.'); }
+    catch (error) {
+      if (!(error instanceof ToolingError && error.code === 'STORE_ERROR' && error.reason === 'FOREIGN_ENTRY')) throw error;
+    }
     this.options.signal?.throwIfAborted();
     const state = crypto.randomBytes(32).toString('base64url');
     const verifier = crypto.randomBytes(64).toString('base64url');

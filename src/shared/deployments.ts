@@ -186,7 +186,7 @@ export function createDeployments(options: { host: HostServices; signal?: AbortS
       } else throw new ToolingError('INVALID_REQUEST', 'Unknown deployment action.');
       await scoped.status(backend, true);
       return JSON.parse(session.sanitize(JSON.stringify({ schemaVersion: 1, action, status: 'success', summary, data }))); 
-    } catch (error) { const failure = options.signal?.aborted ? new ToolingError('CANCELLED', 'The read was cancelled.') : error instanceof ToolingError ? error : new ToolingError('API_ERROR', 'Deployment information is unavailable.'); return { schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message, error: { code: failure.code, message: failure.message } }; }
+    } catch (error) { const failure = options.signal?.aborted ? new ToolingError('CANCELLED', 'The read was cancelled.') : error instanceof ToolingError ? error : new ToolingError('API_ERROR', 'Deployment information is unavailable.'); return { schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message, error: { code: failure.code, message: failure.message, ...(failure.reason ? { reason: failure.reason } : {}) } }; }
   }
   return { dispatch };
 }

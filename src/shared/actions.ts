@@ -97,7 +97,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
       const failure = options.signal?.aborted ? new ToolingError('CANCELLED', 'The action was cancelled.')
         : error instanceof ToolingError ? error : new ToolingError('INTERNAL_ERROR', 'The action could not complete. Check the required local tools and project permissions.');
       return safeResult({ schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message,
-        error: { code: failure.code, message: failure.message },
+        error: { code: failure.code, message: failure.message, ...(failure.reason ? { reason: failure.reason } : {}) },
         ...(state.mutationStarted ? { effects: { state: 'partial-or-uncertain' as const, message: 'Files, dependencies, keys, or remote state may have changed. Inspect the result before retrying; no automatic rollback was attempted.' } } : {})
       });
     }

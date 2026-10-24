@@ -31,6 +31,33 @@ Persistent login uses macOS Keychain or Linux Secret Service (`secret-tool` from
 
 The machine record is the SDKs' existing `MainSequenceCLI.auth` service, backend-scoped account, and version-1 JSON format. There is no Codex-specific credential record and no token file. `refresh-token` renews the saved machine session; it does not replace a token exported into another shell. `logout` removes this backend's local record and separately reports whether remote revocation completed.
 
+## Credential-store diagnostics (0.3.13)
+
+[Devtools issue #24](https://github.com/mainsequence-sdk/mainsequence-devtools/issues/24)
+adds an optional `error.reason` to action failures while retaining `STORE_ERROR` and
+`PERSISTENCE_FAILED`. Hosts should preserve this field and show `error.message`.
+Known reasons are `SESSION_UNAVAILABLE`, `SERVICE_UNAVAILABLE`, `LOCKED`,
+`ACCESS_DENIED`, `HELPER_UNAVAILABLE`, `HELPER_TIMEOUT`, `HELPER_FAILED`,
+`INVALID_RECORD` and `FOREIGN_ENTRY`. The public `CredentialStoreFailureReason` type
+and optional third `ToolingError`/second `CredentialStoreError` constructor argument
+let host persistence adapters use the same contract.
+
+The Linux adapter classifies established helper diagnostics only after an operation
+fails. Missing environment variables alone never block a successful store read.
+Public messages are fixed text: helper stdout/stderr, environment values, record
+contents and credentials are never echoed. Unknown failures give a neutral availability
+message; only an established lock failure instructs the user to unlock the keyring.
+Sign-in preserves the read failure instead of replacing it with an unlock instruction;
+refresh, persistence verification and removal retain the same safe reason. The existing
+foreign Keychain entry replacement rule and secure machine record stay intact.
+
+Host launchers must still supply their own desktop-session environment. Codex's
+`env_vars` allowlist fix lives in its plugin repository. The Claude integration uses
+the same devtools archive and preserves the structured reason through its worker.
+Regression coverage includes helper failures, all four session actions, write/removal
+failures, successful fallback bus discovery, private-output redaction and foreign
+Keychain replacement. Release devtools before updating the public plugin catalogs.
+
 ## Project MCP client
 
 In 0.3.6, remote tool failures use `MCP_TOOL_ERROR` and retain the sanitized MCP

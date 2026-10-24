@@ -12,6 +12,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { normalizeBackendUrl } from './config';
+import { CREDENTIAL_STORE_FAILURES, type CredentialStoreFailureReason } from './credentialStoreFailure';
 
 export const SESSION_SERVICE = 'MainSequenceCLI.auth';
 const SESSION_RECORD_VERSION = 1;
@@ -36,7 +37,7 @@ const SECRET_SERVICE_APPLICATION = 'Python keyring library';
 
 /** The credential store exists and could not be read or written. */
 export class CredentialStoreError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly reason?: CredentialStoreFailureReason) {
     super(message);
     this.name = 'CredentialStoreError';
   }
@@ -46,7 +47,7 @@ export class CredentialStoreError extends Error {
 export class ForeignEntryError extends CredentialStoreError {
   constructor() {
     super(
-      'The Keychain entry was written by another version of the Main Sequence tools. Asking for it would show a consent dialog in every process, so it is not read.'
+      'The Keychain entry was written by another version of the Main Sequence tools. Asking for it would show a consent dialog in every process, so it is not read.', 'FOREIGN_ENTRY'
     );
     this.name = 'ForeignEntryError';
   }
@@ -84,7 +85,10 @@ function runProgram(run: ProgramRunner, program: string, args: string[], input?:
     throw new CredentialStoreError(
       result.error.code === 'ETIMEDOUT'
         ? `The credential store did not answer within ${STORE_TIMEOUT_MS / 1000} seconds. It was waiting for the user: the entry belongs to another program, or the store is locked.`
-        : `The credential store program could not be run (${result.error.code || result.error.name}).`
+        : 'The credential store program could not be run.',
+      result.error.code === 'ETIMEDOUT' ? 'HELPER_TIMEOUT'
+        : result.error.code === 'ENOENT' ? 'HELPER_UNAVAILABLE'
+        : result.error.code === 'EACCES' || result.error.code === 'EPERM' ? 'ACCESS_DENIED' : 'HELPER_FAILED'
     );
   }
   return result;
@@ -179,9 +183,17 @@ function createSecretService(run: ProgramRunner, program: string): CredentialSto
     const result = runProgram(run, program, args, input);
     // `secret-tool` exits 1 both for "no such item" and for an unreachable service. Only the
     // second one says something on standard error.
-    const complaint = (result.stderr || '').trim().split('\n')[0] || '';
-    if (result.status !== 0 && complaint) {
-      throw new CredentialStoreError(`Secret Service is not available: ${complaint}`);
+    const complaint = (result.stderr || '').slice(0, 8192).trim();
+    if (result.status !== 0 && (complaint || result.status !== 1)) {
+      // Recognize established diagnostics; never forward stderr, addresses or secrets.
+      // A missing environment variable alone does not prove failure: libsecret may
+      // discover a valid bus through the desktop. Classify only after helper failure.
+      const reason: CredentialStoreFailureReason = /org\.freedesktop\.Secret\.Error\.IsLocked|collection is locked|cannot unlock/i.test(complaint) ? 'LOCKED'
+        : /org\.freedesktop\.DBus\.Error\.AccessDenied|permission denied|access denied/i.test(complaint) ? 'ACCESS_DENIED'
+        : /org\.freedesktop\.DBus\.Error\.(?:ServiceUnknown|NameHasNoOwner)|name org\.freedesktop\.secrets was not provided/i.test(complaint) ? 'SERVICE_UNAVAILABLE'
+        : /(?:cannot|unable to) autolaunch.*(?:D-Bus|dbus)|failed to connect to (?:the )?(?:session|D-Bus|dbus) bus|could not connect: (?:no such file or directory|connection refused)/i.test(complaint) ? 'SESSION_UNAVAILABLE'
+        : 'HELPER_FAILED';
+      throw new CredentialStoreError(CREDENTIAL_STORE_FAILURES[reason], reason);
     }
     return result;
   }
@@ -275,10 +287,10 @@ function parseRecord(raw: string, backend: string): MachineSession | null {
   try {
     record = JSON.parse(raw);
   } catch {
-    throw new CredentialStoreError('The saved session record is not valid.');
+    throw new CredentialStoreError('The saved session record is not valid.', 'INVALID_RECORD');
   }
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw new CredentialStoreError('The saved session record is not valid.');
+    throw new CredentialStoreError('The saved session record is not valid.', 'INVALID_RECORD');
   }
   // `v` is written, not checked: the Python and Command Center CLIs read a record by its fields,
   // and the three readers must accept the same records.

@@ -203,7 +203,7 @@ export class AgentClient {
       const failure = this.options.signal?.aborted ? new ToolingError('CANCELLED', 'Agent operation cancelled.')
         : error instanceof ToolingError ? error : new ToolingError('API_ERROR', 'The agent operation could not complete.');
       return { schemaVersion: 1, action: input.action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message,
-        error: { code: failure.code, message: failure.message }, ...(sent ? { effects: { state: 'partial-or-uncertain' as const, message: 'The remote agent may have received this request. Do not automatically resend it; inspect its session or task first.' } } : {}) };
+        error: { code: failure.code, message: failure.message, ...(failure.reason ? { reason: failure.reason } : {}) }, ...(sent ? { effects: { state: 'partial-or-uncertain' as const, message: 'The remote agent may have received this request. Do not automatically resend it; inspect its session or task first.' } } : {}) };
     }
   }
 }

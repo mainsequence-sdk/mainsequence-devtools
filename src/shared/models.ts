@@ -1,4 +1,5 @@
 import type { McpRequest } from './mcp';
+import { credentialStoreFailure, type CredentialStoreFailureReason } from './credentialStoreFailure';
 import type { AgentRequest } from './agents';
 import type { OrganizationProjectRequest } from './organizationProjects';
 export type ProjectType = 'python' | 'vite_react';
@@ -25,7 +26,10 @@ export type ActionRequest = McpRequest | AgentRequest | OrganizationProjectReque
 
 export type ErrorCode = 'CURRENT_DIRECTORY_UNAVAILABLE' | 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'MCP_TOOL_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
 export class ToolingError extends Error {
-  constructor(public readonly code: ErrorCode, message: string) { super(message); this.name = 'ToolingError'; }
+  readonly reason?: CredentialStoreFailureReason;
+  constructor(public readonly code: ErrorCode, message: string, reason?: CredentialStoreFailureReason) {
+    super(message); this.name = 'ToolingError'; this.reason = credentialStoreFailure(reason)?.reason;
+  }
 }
 export type SessionStatus = {
   backend: string;
@@ -54,7 +58,7 @@ export type ActionResult<T = unknown> = {
   action: string;
   status: 'success' | 'failure' | 'cancelled';
   summary: string;
-  error?: { code: ErrorCode; message: string };
+  error?: { code: ErrorCode; message: string; reason?: CredentialStoreFailureReason };
   data?: T;
   effects?: { state: 'partial-or-uncertain'; message: string };
 };

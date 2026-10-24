@@ -405,7 +405,7 @@ export class McpConnections {
         : error instanceof ToolingError ? error : new ToolingError('INTERNAL_ERROR', 'The MCP action could not complete.');
       if(cache && key && failure.code!=='MCP_TOOL_ERROR') cache.delete(key);
       return this.sanitize({ schemaVersion: 1, action: request.action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure',
-        summary: failure.message, error: { code: failure.code, message: failure.message }, ...(resultData === undefined || ['AUTH_REJECTED', 'NOT_AUTHENTICATED'].includes(failure.code) ? {} : { data: resultData }),
+        summary: failure.message, error: { code: failure.code, message: failure.message, ...(failure.reason ? { reason: failure.reason } : {}) }, ...(resultData === undefined || ['AUTH_REJECTED', 'NOT_AUTHENTICATED'].includes(failure.code) ? {} : { data: resultData }),
         ...(callStarted ? { effects: { state: 'partial-or-uncertain', message: 'The tool may have changed remote state. No automatic retry was attempted; verify the outcome before repeating it.' } } : {}) });
     } finally { this.secrets.clear(); }
   }

@@ -1,6 +1,6 @@
 {
   "name": "@dev-mainsequence/devtools",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Shared MainSequence developer actions, project operations, MCP client and command runner",
   "license": "MIT",
   "engines": {

@@ -198,7 +198,7 @@ export function createProjectOperations(options: ProjectOperationOptions) {
       return sanitized({ schemaVersion: 1, action, status: 'success', summary: `${action} completed.`, data });
     } catch (error) {
       const failure = signal?.aborted ? new ToolingError('CANCELLED', 'The project operation was cancelled.') : error instanceof ToolingError ? error : new ToolingError('INTERNAL_ERROR', 'The project operation could not complete. Check the selected paths and local tool permissions.');
-      return sanitized({ schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message, error: { code: failure.code, message: failure.message },
+      return sanitized({ schemaVersion: 1, action, status: failure.code === 'CANCELLED' ? 'cancelled' : 'failure', summary: failure.message, error: { code: failure.code, message: failure.message, ...(failure.reason ? { reason: failure.reason } : {}) },
         ...(mutationStarted ? { effects: { state: 'partial-or-uncertain' as const, message: 'Local files or Docker state may have changed. Inspect the project before retrying.' } } : {}) });
     }
   }
