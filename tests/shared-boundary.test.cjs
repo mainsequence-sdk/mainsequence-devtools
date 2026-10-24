@@ -10,7 +10,7 @@ test('shared APIs have no dependency on any host integration', () => {
     assert.doesNotMatch(text, /from\s+['"][^'"]*(?:claude|codex|\/hosts\/)/i, file);
   }
   // Claude Desktop and the Codex plugin are released from their own repositories (ADR 0003).
-  for (const removed of ['src/hosts', 'src/claudeRunner.ts', 'manifests', 'dist/hosts', 'dist/claudeRunner.js', 'claude', 'artifacts/codex', '.codex-plugin', 'hooks', 'skills']) {
+  for (const removed of ['src/hosts', 'src/claudeRunner.ts', 'manifests', 'dist/hosts', 'dist/claudeRunner.js', 'claude', 'artifacts/codex', '.codex-plugin', 'hooks', 'skills', '.agents/plugins/marketplace.json']) {
     assert.equal(fs.existsSync(path.join(root, removed)), false, removed);
   }
   const runner = fs.readFileSync(path.join(root, 'src/runner.ts'), 'utf8');
