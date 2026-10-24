@@ -1,6 +1,6 @@
 {
   "name": "@dev-mainsequence/devtools",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Shared MainSequence developer actions, project operations, MCP client and command runner",
   "license": "MIT",
   "engines": {
@@ -29,7 +29,8 @@
     "test": "npm run build && node --test tests/*.test.cjs",
     "prepack": "npm run build",
     "verify:package": "node scripts/verify-package.cjs",
-    "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package"
+    "release:check": "npm run typecheck && npm test && node scripts/check-release.cjs && node scripts/check-docs.cjs && npm pack --ignore-scripts --pack-destination artifacts && npm run verify:package",
+    "check:docs": "node scripts/check-docs.cjs"
   },
   "devDependencies": {
     "@types/node": "18.19.130",
