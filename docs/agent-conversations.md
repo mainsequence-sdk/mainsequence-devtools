@@ -1,6 +1,6 @@
 # Shared platform agent conversations
 
-The additive 0.2.6 API discovers agents and exchanges messages through the existing
+This package discovers agents and exchanges messages through the existing
 MainSequence `/mcp` gateway. No backend routes, schemas, account handling, or provider
 configuration change. Claude UI, native draft/command handling and conversation controls
 belong to `mainsequence-claude-desktop`; this package contains only the reusable
@@ -56,7 +56,7 @@ Set `waitForReady: true` on `agent-send` to use the same readiness gate immediat
 before dispatch, including task continuation. A readiness failure has no uncertain
 message effect; a failure after dispatch retains the existing uncertain-send marker.
 This option defaults off for compatibility with existing adapters, whose gateway
-sender continues to own readiness. Claude 0.4.5 opts in. No UI package, Python SDK
+sender continues to own readiness. The Claude Desktop plugin opts in. No UI package, Python SDK
 or direct runtime HTTP transport is added.
 
 A send may use that resolved `sessionUid`, or a stable handle for legacy clients.
@@ -78,7 +78,7 @@ sixth request argument accepts a per-request `timeoutMs` up to 300,000 milliseco
 Agent replies are external data. Consumers must not treat returned text or card
 descriptions as instructions that override user requests or permission checks.
 
-## Durable host delivery (0.3.3)
+## Durable host delivery
 
 `AgentDelivery` is a public, host-independent coordinator. Construct it with
 `createDispatch(signal)` returning the existing `createDevTools(...).dispatch`,
@@ -125,23 +125,6 @@ storage. Fixtures use temporary storage and never replace machine credentials.
 session allocation/resolution without messaging, timeout metadata, session continuation, response modes, polling, cancellation and uncertain-send
 behavior using a synthetic MCP transport. These are contract tests, not evidence of
 live agent availability. Existing authentication and project tests remain in the suite.
-
-Version 0.2.4 was published on 2026-10-15 from commit `57bb311` through the existing
-[trusted-publisher workflow](https://github.com/mainsequence-sdk/mainsequence-devtools/actions/runs/38732377231).
-The public registry archive is verified with integrity
-`sha512-RgU8NALWU6XjCMC297pVcfjyM5xEQlZjnxdTKXkgBSWF1MX8HHreGMxA7xbdxs+SjWJczJ3bhBYmxsqJGxLQkQ==`.
-Claude's consumer lockfile pins that archive. Publication does not update the Claude
-marketplace or existing VS Code/Codex pins. See the [release procedure](phase-2-release.md);
-do not republish a rebuilt archive under an existing npm version.
-
-Version 0.2.5 adds session allocation/resolution without a message and validated
-platform tool deadlines. Claude 0.4.4 consumes this additive API. Release through
-the existing trusted-publisher workflow, verify the public archive integrity, and
-then pin that archive in the consumer. Existing Codex marketplace and VS Code pins
-are unchanged by this shared-library release.
-
-Version 0.2.6 adds readiness preparation and opt-in send-time revalidation for Claude
-0.4.5. Existing session allocation and other adapter behavior remain unchanged.
 
 Agent list, search and detail results include `defaults: { provider, model, thinking }`, projected only from existing `llm_provider`, `llm_model` and `llm_thinking` fields. Empty or absent fields remain empty strings. These are Agent defaults for new sessions, not a claim about a resumed session’s resolved configuration. Runtime configuration and credential fields are excluded.
 

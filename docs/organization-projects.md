@@ -21,7 +21,7 @@ whose backward-compatible API still handles local repository operations. No new
 backend route, schema or grant is introduced; runtime/workload credentials remain
 outside the human Project API.
 
-Links revalidate membership and use canonical Foundry URLs when the host supplies
+Links revalidate membership and use Command Center URLs when the host supplies
 `commandCenterUrl`. Otherwise repository/branch links use the authorized GitHub
 binding. Missing/inaccessible bindings are reported, not guessed. Only HTTP(S)
 URLs without credentials are opened.
