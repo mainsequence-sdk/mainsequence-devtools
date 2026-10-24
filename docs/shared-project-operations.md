@@ -5,7 +5,7 @@ repository/SDK/dependency workflows, MCP and project filesystem operations.
 Consumers import the package's public API. They implement their native UI,
 process bridge, lifecycle, application-specific credentials and distribution.
 
-The additive 0.2.2 API exports `createProjectOperations`,
+The package exports `createProjectOperations`,
 `PROJECT_OPERATION_ACTIONS`, `ProjectOperationRequest`, `ProjectOperationOptions`,
 `validateDockerImage`, `validateDockerPlatform` and `updateDevcontainerJsonc`.
 

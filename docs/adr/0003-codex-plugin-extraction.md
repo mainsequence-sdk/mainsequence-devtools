@@ -18,7 +18,7 @@ library pinned by VS Code and Claude Desktop, and the installable Codex plugin.
 The Claude Desktop integration already lives in
 [mainsequence-claude-desktop](https://github.com/mainsequence-sdk/mainsequence-claude-desktop),
 consuming only the public package API and bundling the pinned package into its own
-artifact. The [integration roadmap](../integration-roadmap.md) deferred the same move for
+artifact. The integration roadmap (since removed) deferred the same move for
 Codex: "extract adapter, manifests, host tests and releases into an independent
 repository. Preserve plugin identity and installation compatibility."
 
