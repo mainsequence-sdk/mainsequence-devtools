@@ -33,9 +33,9 @@ export type { ActionData, DiscoveryResultMap, AgentDirectory, McpConnection, Mcp
 export { mainSequenceStateDirectory } from './shared/stateDirectory';
 export { projectToolName, isProjectToolName, projectToolConnection, projectToolConnectionLabel, projectToolDefinition, projectToolDefinitions, projectToolBinding, projectToolRegistration,
   projectToolResult, projectToolTimeoutMs, readProjectToolCatalog, readProjectToolCatalogFile, projectToolCatalogPath, createProjectToolCatalog,
-  PROJECT_TOOL_PREFIX, MAX_PROJECT_TOOLS_PER_CONNECTION, PROJECT_TOOL_TIMEOUT_HINT, DEFAULT_PROJECT_REQUEST_TIMEOUT_MS, MAX_PROJECT_TOOL_TIMEOUT_MS } from './shared/projectTools';
+  PROJECT_TOOL_PREFIX, MAX_PROJECT_TOOLS_PER_CONNECTION, PROJECT_TOOL_TIMEOUT_HINT, DEFAULT_PROJECT_REQUEST_TIMEOUT_MS, MAX_PROJECT_TOOL_TIMEOUT_MS, DEFAULT_PROJECT_REFRESH_BUDGET_MS } from './shared/projectTools';
 export type { ProjectToolBinding, ProjectToolConnection, ProjectToolCatalog, ProjectToolCatalogOptions, ProjectToolCatalogState, ProjectToolCatalogStore, ProjectToolCatalogView,
-  ProjectToolDefinition, ProjectToolDispatch, ProjectToolResult, ProjectToolScope } from './shared/projectTools';
+  ProjectToolDefinition, ProjectToolDispatch, ProjectToolResult, ProjectToolScope, ProjectToolUnavailable } from './shared/projectTools';
 export { listEnvironments } from './shared/environments';
 export type { EnvironmentSummary } from './shared/environments';
 export { bindSessionAccount } from './shared/accountScope';

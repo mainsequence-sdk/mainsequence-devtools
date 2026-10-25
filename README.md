@@ -228,18 +228,25 @@ is specific to their host.
   content blocks, then one JSON text block with `summary`, `effects`, `error` and
   `structuredContent` when the call failed, returned structured content or no blocks;
   `isError` on any non-success, with the remote content of an `MCP_TOOL_ERROR` preserved.
-- `readProjectToolCatalog(dispatch, { backend?, environmentUid?, previous?, signal? })`:
-  `mcp-list` (read-only), then one `mcp-tools` per saved connection, two at a time. A
-  connection whose catalog cannot be read keeps its previous tools and is named in
-  `unavailable`; a removed connection loses them; connections outside the scope are
-  carried over. The session for a connection's backend is verified when its tool is called.
-- `createProjectToolCatalog({ dispatch, file?, staleMs?, notify?, disabled? })`: the shared
-  on-disk catalog, `project-tool-catalog.json` beside `mcp-connections.json`
+- `readProjectToolCatalog(dispatch, { backend?, environmentUid?, previous?, signal?, budgetMs? })`:
+  `mcp-list` (read-only), then one `mcp-tools` per saved connection, two at a time, all
+  within one budget (300 s by default). A connection whose catalog cannot be read, or is
+  not read before the budget runs out, keeps its previous tools and stays in the catalog
+  marked `unavailable` with the reason, so a scope whose connections exist is never
+  written empty and healthy; a removed connection loses its tools; connections outside the
+  scope are carried over. The session for a connection's backend is verified when its tool
+  is called.
+- `createProjectToolCatalog({ dispatch, file?, backend?, budgetMs?, staleMs?, notify?, disabled? })`:
+  the shared on-disk catalog, `project-tool-catalog.json` beside `mcp-connections.json`
   (`mainSequenceStateDirectory(env)` names that directory). `list()` answers from the file
-  at once, scoped to the current account's backend once a refresh has learned it;
-  `refresh()` re-reads under a lock, so one process reads catalogs at a time while the
-  others pick its result up from the file; `update()`, `dispose()` and `notify` serve a
-  long-lived host such as the Codex MCP server. The file holds schemas and labels only.
+  at once, for the host's backend only: the one given, or resolved by `ready()` without a
+  network request the way `auth-status` resolves it, or learned from a refresh; until it is
+  known a listing is empty, never another backend's tools. `state()` reports the connections
+  marked `unavailable` in the file, whichever process marked them. `refresh()` re-reads
+  under a lock, so one process reads catalogs at a time while the others pick its result up
+  from the file, and ends its dispatcher's signal when it returns; `update()`, `dispose()`
+  and `notify` serve a long-lived host such as the Codex MCP server. The file holds schemas
+  and labels only.
 - The `mcp-catalog` action returns the same definitions, bindings and state for a host
   that dispatches actions instead of importing: without `refresh` from the file, with
   `refresh: true` re-reading a stale cache, with `'force'` always, waiting up to two

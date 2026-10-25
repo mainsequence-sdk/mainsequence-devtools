@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { ActionRequest, ActionResult, ErrorCode, SessionStatus, ToolingError } from './models';
 import type { McpCatalog, McpConnection, McpTool } from './discoveryTypes';
 import { mainSequenceStateDirectory } from './stateDirectory';
+import { resolveBackend } from './repositories';
 
 /**
  * Saved project MCP tools as first-class tools of a host (ADR 0004). One tool name, one
@@ -17,7 +18,10 @@ export type ProjectToolDispatch = (request: ActionRequest) => Promise<ActionResu
 /** Which saved connections a listing or a refresh covers. Without a scope, every saved connection. */
 export type ProjectToolScope = { backend?: string; environmentUid?: string };
 export type ProjectToolBinding = { backend: string; environmentUid: string; environmentName: string; releaseUid: string; connection: string; tool: string };
-export type ProjectToolConnection = { backend: string; releaseUid: string; environmentUid: string; environmentName: string; name: string; tools: McpTool[] };
+/** Why a saved connection's catalog could not be read at the last refresh. Kept in the file, so every
+ * host and process sees it; cleared by the next successful read. */
+export type ProjectToolUnavailable = { at: string; code: string; message: string };
+export type ProjectToolConnection = { backend: string; releaseUid: string; environmentUid: string; environmentName: string; name: string; tools: McpTool[]; unavailable?: ProjectToolUnavailable };
 export type ProjectToolCatalog = { version: 1; updatedAt: string; connections: ProjectToolConnection[] };
 export type ProjectToolDefinition = { name: string; title: string; description: string; inputSchema: Row;
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; openWorldHint: boolean } };
@@ -34,9 +38,13 @@ export type ProjectToolCatalogView = ProjectToolCatalogState & {
   definitions: ProjectToolDefinition[]; bindings: Record<string, ProjectToolBinding>;
 };
 export type ProjectToolCatalogOptions = {
-  /** A dispatcher for one refresh; the signal aborts when the catalog is disposed mid-refresh. */
+  /** A dispatcher for one refresh; the signal aborts when the refresh ends or the catalog is disposed. */
   dispatch: (signal: AbortSignal) => ProjectToolDispatch;
   file?: string; env?: NodeJS.ProcessEnv; staleMs?: number; disabled?: boolean;
+  /** The backend whose connections this host lists; otherwise `ready()` resolves it the way `auth-status` does. */
+  backend?: string;
+  /** How long one refresh may take in all; connections not read by then are unavailable. */
+  budgetMs?: number;
   /** Called when the registered definitions changed, for a host's change announcement. */
   notify?: () => void;
 };
@@ -47,6 +55,9 @@ export const MAX_PROJECT_TOOLS_PER_CONNECTION = 80;
 export const PROJECT_TOOL_TIMEOUT_HINT = 'mainsequence.ai/timeout-seconds/v1';
 export const DEFAULT_PROJECT_REQUEST_TIMEOUT_MS = 120_000;
 export const MAX_PROJECT_TOOL_TIMEOUT_MS = 300_000;
+/** A whole refresh, every connection included: a cold project answers `initialize` in up to 120 s, and a
+ * host must not hold the shared lock for the 13 minutes once measured. */
+export const DEFAULT_PROJECT_REFRESH_BUDGET_MS = 300_000;
 const CATALOG_FILE = 'project-tool-catalog.json';
 const LOCK_STALE_MS = 10 * 60_000;
 const UUID = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
@@ -159,16 +170,19 @@ function success<T>(result: ActionResult<T>): T {
   return result.data;
 }
 /** Every saved connection in scope and its current tools: `mcp-list` (read-only), then one `mcp-tools`
- * per connection, two at a time (the shared transport's per-origin limit). A connection whose catalog
- * cannot be read now keeps its `previous` tools and is named in `unavailable`; a removed connection
- * loses them; connections outside the scope are carried over from `previous` unchanged. No account
- * snapshot is attached: a registered tool is bound to a saved connection, and the session for that
- * connection's backend is verified when the tool is called. */
+ * per connection, two at a time (the shared transport's per-origin limit), all within one budget. A
+ * connection whose catalog cannot be read now, or is not read before the budget runs out, stays in the
+ * catalog marked `unavailable` with the reason, keeping its `previous` tools when it had any, so a scope
+ * is never written empty and healthy when its connections exist; a removed connection loses its tools;
+ * connections outside the scope are carried over from `previous` unchanged. No account snapshot is
+ * attached: a registered tool is bound to a saved connection, and the session for that connection's
+ * backend is verified when the tool is called. */
 export async function readProjectToolCatalog(dispatch: ProjectToolDispatch, options: {
-  backend?: string; environmentUid?: string; previous?: ProjectToolCatalog | null; signal?: AbortSignal;
+  backend?: string; environmentUid?: string; previous?: ProjectToolCatalog | null; signal?: AbortSignal; budgetMs?: number;
   /** The session status already read for this refresh; otherwise `auth-status` is dispatched first. */
   session?: SessionStatus;
-} = {}): Promise<{ catalog: ProjectToolCatalog; backend: string; unavailable: string[]; retained: number }> {
+} = {}): Promise<{ catalog: ProjectToolCatalog; backend: string; unavailable: string[]; retained: number; durationMs: number }> {
+  const started = Date.now(), budgetMs = options.budgetMs ?? DEFAULT_PROJECT_REFRESH_BUDGET_MS;
   const status = options.session ?? success(await dispatch({ action: 'auth-status', ...(options.backend ? { backend: options.backend } : {}) })) as SessionStatus;
   if (!status.authenticated || !status.backend) throw new ToolingError('NOT_AUTHENTICATED', 'Sign in to MainSequence to register saved project MCP tools.');
   const backend = status.backend, environmentUid = options.environmentUid?.toLowerCase();
@@ -177,34 +191,47 @@ export async function readProjectToolCatalog(dispatch: ProjectToolDispatch, opti
   const rows = success(await dispatch({ action: 'mcp-list', backend, readOnly: true, ...environment })) as McpConnection[];
   const previous = options.previous?.connections ?? [];
   const connections = previous.filter(connection => !inScope(connection, scope)), unavailable: string[] = [];
-  let retained = 0;
+  let retained = 0, expired = false, timer: NodeJS.Timeout | undefined;
+  const budget = new Promise<'budget'>(resolve => { timer = setTimeout(() => { expired = true; resolve('budget'); }, Math.max(0, budgetMs - (Date.now() - started))); });
+  const seconds = budgetMs >= 1000 ? `${Math.round(budgetMs / 1000)} s` : `${budgetMs} ms`;
+  function unreadable(row: McpConnection, code: string, message: string): void {
+    const earlier = previous.find(connection => connection.backend === backend && connection.releaseUid === row.resource_release_uid.toLowerCase());
+    if (earlier) retained += earlier.tools.length;
+    connections.push({ ...(earlier ?? projectToolConnection(row)), unavailable: { at: new Date().toISOString(), code, message } });
+    unavailable.push(projectToolConnectionLabel(row));
+  }
   const pending = [...rows];
-  await Promise.all(Array.from({ length: Math.min(2, pending.length) }, async () => {
-    while (pending.length) {
-      options.signal?.throwIfAborted();
-      const row = pending.shift()!;
-      try {
-        const output = success(await dispatch({ action: 'mcp-tools', backend, releaseUid: row.resource_release_uid, ...environment })) as McpCatalog;
-        const current = output.connection;
-        connections.push(projectToolConnection({ ...row, name: row.name ?? current?.name, display_name: row.display_name ?? current?.display_name,
-          mcp_connection: { ...row.mcp_connection, organization_environment_name: row.mcp_connection.organization_environment_name ?? current?.mcp_connection?.organization_environment_name } }, output.tools));
-      } catch (error) {
-        if (error instanceof ToolingError && error.code === 'CANCELLED') throw error;
+  try {
+    await Promise.all(Array.from({ length: Math.min(2, pending.length) }, async () => {
+      while (pending.length && !expired) {
         options.signal?.throwIfAborted();
-        const earlier = previous.find(connection => connection.backend === backend && connection.releaseUid === row.resource_release_uid.toLowerCase());
-        if (earlier) { connections.push(earlier); retained += earlier.tools.length; }
-        unavailable.push(projectToolConnectionLabel(row));
+        const row = pending.shift()!;
+        try {
+          const outcome = await Promise.race([Promise.resolve(dispatch({ action: 'mcp-tools', backend, releaseUid: row.resource_release_uid, ...environment })).then(result => ({ result })), budget]);
+          if (outcome === 'budget') { unreadable(row, 'TIMEOUT', `Not read within the ${seconds} refresh budget; its earlier tools stay registered until a later refresh reads it.`); break; }
+          const output = success(outcome.result) as McpCatalog, current = output.connection;
+          connections.push(projectToolConnection({ ...row, name: row.name ?? current?.name, display_name: row.display_name ?? current?.display_name,
+            mcp_connection: { ...row.mcp_connection, organization_environment_name: row.mcp_connection.organization_environment_name ?? current?.mcp_connection?.organization_environment_name } }, output.tools));
+        } catch (error) {
+          if (error instanceof ToolingError && error.code === 'CANCELLED') throw error;
+          options.signal?.throwIfAborted();
+          unreadable(row, error instanceof ToolingError ? error.code : 'INTERNAL_ERROR', error instanceof ToolingError ? error.message : 'The catalog could not be read.');
+        }
       }
-    }
-  }));
+    }));
+    // Whatever the budget left unread is reported, never silently dropped.
+    for (const row of pending) unreadable(row, 'TIMEOUT', `Not read within the ${seconds} refresh budget; its earlier tools stay registered until a later refresh reads it.`);
+  } finally { clearTimeout(timer); }
   connections.sort((a, b) => a.backend.localeCompare(b.backend) || a.environmentUid.localeCompare(b.environmentUid) || a.releaseUid.localeCompare(b.releaseUid));
-  return { catalog: { version: 1, updatedAt: new Date().toISOString(), connections }, backend, unavailable, retained };
+  return { catalog: { version: 1, updatedAt: new Date().toISOString(), connections }, backend, unavailable, retained, durationMs: Date.now() - started };
 }
 
 function connectionRecord(value: unknown): ProjectToolConnection | undefined {
   if (!object(value) || typeof value.backend !== 'string' || !UUID.test(String(value.releaseUid)) || !UUID.test(String(value.environmentUid)) || !Array.isArray(value.tools)) return;
+  const u = value.unavailable;
   return { backend: value.backend, releaseUid: String(value.releaseUid).toLowerCase(), environmentUid: String(value.environmentUid).toLowerCase(),
-    environmentName: text(value.environmentName), name: text(value.name), tools: normalizeTools(value.tools) };
+    environmentName: text(value.environmentName), name: text(value.name), tools: normalizeTools(value.tools),
+    ...(object(u) && typeof u.code === 'string' && typeof u.message === 'string' ? { unavailable: { at: text(u.at, 40), code: text(u.code, 60), message: text(u.message, 1000) } } : {}) };
 }
 /** Beside `mcp-connections.json`, shared by every host on the machine. */
 export const projectToolCatalogPath = (env: NodeJS.ProcessEnv = process.env): string => path.join(mainSequenceStateDirectory(env), CATALOG_FILE);
@@ -229,10 +256,12 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
   const file = options.file ?? projectToolCatalogPath(options.env), staleMs = options.staleMs ?? 15 * 60_000;
   let catalog = readProjectToolCatalogFile(file), loadedAt = mtime(), running: Promise<boolean> | null = null;
   let current: { controller: AbortController; locked: boolean } | null = null;
-  // The scope of the last refresh: the current account's backend (learned from auth-status), so a
-  // listing shows this host's connections even when another backend's are cached beside them.
-  let known: ProjectToolScope | undefined;
-  const state = { unavailable: [] as string[], retained: 0, error: null as ProjectToolCatalogState['error'] };
+  // The backend this host's listing is for: given by the host, resolved by ready() the way auth-status
+  // resolves it, or learned from a refresh. The file is shared by every host and backend on the machine,
+  // so until it is known a listing shows nothing rather than another backend's tools.
+  let known: ProjectToolScope | undefined = options.backend ? { backend: options.backend } : undefined;
+  let readying: Promise<void> | null = null;
+  const state = { error: null as ProjectToolCatalogState['error'] };
   function mtime(): number { try { return fs.statSync(file).mtimeMs; } catch { return 0; } }
   /** Another process may have refreshed the shared cache since this one read it. */
   function reload(): void {
@@ -240,7 +269,9 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
     if (now === loadedAt) return;
     catalog = readProjectToolCatalogFile(file); loadedAt = now;
   }
-  const registration = (scope?: ProjectToolScope) => projectToolRegistration(catalog, scope ?? known);
+  const none = { definitions: [] as ProjectToolDefinition[], bindings: new Map<string, ProjectToolBinding>() };
+  const registration = (scope?: ProjectToolScope) => (scope ?? known) ? projectToolRegistration(catalog, scope ?? known) : none;
+  const selected = (scope?: ProjectToolScope) => (catalog?.connections ?? []).filter(connection => (scope ?? known) ? inScope(connection, scope ?? known) : false);
   async function write(next: ProjectToolCatalog): Promise<void> {
     await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     const temporary = `${file}.${randomUUID()}.tmp`;
@@ -278,16 +309,26 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
   }
   return {
     file,
-    /** Definitions for the host's tool list, from the newest shared cache. */
+    /** The backend this listing is for, resolved once without any network request (the process
+     * environment, then the shared preferences, then the default), as `auth-status` resolves it. A
+     * host calls this before its first tool list; a refresh or an explicit scope also sets it. */
+    ready(): Promise<void> {
+      if (known) return Promise.resolve();
+      readying ??= resolveBackend(undefined, undefined, options.env ?? process.env).then(backend => { known ??= { backend }; }, () => { /* no preference and no default: listings stay empty until a refresh learns the backend */ });
+      return readying;
+    },
+    /** Definitions for the host's tool list, from the newest shared cache, for the known backend only. */
     list(scope?: ProjectToolScope): ProjectToolDefinition[] { reload(); return registration(scope).definitions; },
     binding(name: string): ProjectToolBinding | undefined { reload(); return registration({}).bindings.get(name); },
     state(scope?: ProjectToolScope): ProjectToolCatalogState {
       reload();
-      const selected = scope ?? known;
+      const connections = selected(scope), unavailable = connections.filter(connection => connection.unavailable);
       return { count: registration(scope).definitions.length,
-        connections: (catalog?.connections ?? []).filter(connection => inScope(connection, selected)).map(connection => ({ backend: connection.backend, releaseUid: connection.releaseUid,
-          environmentUid: connection.environmentUid, environmentName: connection.environmentName, name: connection.name, tools: connection.tools.length })),
-        updatedAt: catalog?.updatedAt || null, refreshing: running !== null, unavailable: state.unavailable, retained: state.retained, error: state.error };
+        connections: connections.map(connection => ({ backend: connection.backend, releaseUid: connection.releaseUid, environmentUid: connection.environmentUid, environmentName: connection.environmentName,
+          name: connection.name, tools: connection.tools.length, ...(connection.unavailable ? { unavailable: connection.unavailable } : {}) })),
+        updatedAt: catalog?.updatedAt || null, refreshing: running !== null,
+        // Read from the file, so a host whose process did not run the refresh still sees what it could not read.
+        unavailable: unavailable.map(connection => connection.name || connection.releaseUid), retained: unavailable.reduce((sum, connection) => sum + connection.tools.length, 0), error: state.error };
     },
     /** The state plus definitions and bindings, as the `mcp-catalog` action returns them. */
     view(scope?: ProjectToolScope): ProjectToolCatalogState & { definitions: ProjectToolDefinition[]; bindings: Record<string, ProjectToolBinding> } {
@@ -321,9 +362,9 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
           current!.locked = true;
           try {
             reload();
-            const read = await readProjectToolCatalog(dispatch, { ...scope, backend: session.backend, previous: catalog, signal: controller.signal, session });
+            const read = await readProjectToolCatalog(dispatch, { ...scope, backend: session.backend, previous: catalog, signal: controller.signal, session, budgetMs: options.budgetMs });
             await write(read.catalog);
-            state.unavailable = read.unavailable; state.retained = read.retained; state.error = null;
+            state.error = null;
             adopt(read.catalog, scope ?? { backend: read.backend });
             return true;
           } finally { current!.locked = false; await release(); }
@@ -331,7 +372,10 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
           state.error = { code: error instanceof ToolingError ? error.code : 'INTERNAL_ERROR', message: error instanceof ToolingError ? error.message : 'The saved project MCP tools could not be refreshed.' };
           return false;
         }
-      })().finally(() => { running = null; current = null; });
+      })().finally(() => {
+        // A read the budget left behind must not keep a socket or the dispatcher alive.
+        controller.abort(); running = null; current = null;
+      });
       return running;
     },
     /** A host process is ending: stop its refresh and free the shared lock for the next one at once. */
@@ -346,7 +390,8 @@ export function createProjectToolCatalog(options: ProjectToolCatalogOptions) {
       reload();
       const index = catalog?.connections.findIndex(item => item.releaseUid === releaseUid.toLowerCase() && (!backend || item.backend === backend)) ?? -1;
       if (!catalog || index < 0) { void this.refresh(true); return; }
-      const connections = catalog.connections.map((item, i) => i === index ? { ...item, tools: normalizeTools(tools) } : item);
+      // A catalog just read is a successful read: the connection is available again.
+      const connections = catalog.connections.map((item, i) => i === index ? { ...item, tools: normalizeTools(tools), unavailable: undefined } : item);
       const next: ProjectToolCatalog = { version: 1, updatedAt: new Date().toISOString(), connections };
       try { await write(next); adopt(next); } catch { /* the in-memory tools are already current */ }
     },

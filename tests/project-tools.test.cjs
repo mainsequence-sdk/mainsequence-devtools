@@ -195,19 +195,73 @@ test('without a session nothing is read and the state says so; a signed-out refr
   assert.equal(f.actions.length, count + 1); assert.equal(f.catalog.state().error.code, 'NOT_AUTHENTICATED'); assert.equal(f.catalog.list().length, 1);
 });
 
-test('a listing is scoped to the current backend once a refresh learned it, so another backend\'s cached connections stay out of a host\'s tool list', async t => {
+test('a listing is empty until the host\'s backend is known, then scoped to it: another backend\'s cached connections never enter a host\'s tool list', async t => {
   const elsewhere = { backend: 'https://elsewhere.example.test', releaseUid, environmentUid, environmentName: 'Research', name: 'Elsewhere', tools: [metrics] };
   const f = await fixture(t, healthy());
   await fs.mkdir(path.dirname(f.file), { recursive: true });
   await fs.writeFile(f.file, JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), connections: [elsewhere] }));
-  const catalog = createProjectToolCatalog({ file: f.file, dispatch: () => healthy(), notify: () => { f.changed = (f.changed || 0) + 1; } });
-  assert.equal(catalog.list().length, 1, 'before the backend is known the whole cache is listed');
-  assert.equal(await catalog.refresh(), false, 'the cache is fresh');
-  assert.deepEqual(catalog.list(), [], 'knowing the backend scopes the listing'); assert.equal(f.changed, 1, 'and the change is announced');
-  assert.equal(catalog.list({ backend: elsewhere.backend }).length, 1); assert.ok(catalog.binding(projectToolName(elsewhere.backend, environmentUid, releaseUid, 'metrics')), 'a binding resolves whatever its backend');
-  await catalog.refresh(true);
-  assert.deepEqual(catalog.list().map(d => d.description), ['MainSequence Metrics [Research]: Inspect metrics']);
+  // The first release listed every cached scope on a fresh server's first tools/list.
+  const unknown = createProjectToolCatalog({ file: f.file, dispatch: () => healthy() });
+  assert.deepEqual(unknown.list(), [], 'before the backend is known nothing is listed');
+  assert.equal(unknown.state().count, 0); assert.deepEqual(unknown.state().connections, []); assert.deepEqual(unknown.view().definitions, []);
+  // ready() resolves the backend without a network request, the way auth-status does: here from the environment.
+  const resolved = createProjectToolCatalog({ file: f.file, env: { MAINSEQUENCE_ENDPOINT: elsewhere.backend }, dispatch: () => { throw new Error('ready() must not dispatch'); } });
+  await resolved.ready(); await resolved.ready();
+  assert.equal(resolved.list().length, 1, 'the resolved backend\'s connection is listed');
+  const given = createProjectToolCatalog({ file: f.file, backend, dispatch: () => healthy(), notify: () => { f.changed = (f.changed || 0) + 1; } });
+  assert.deepEqual(given.list(), [], 'a given backend scopes the listing at once');
+  assert.equal(await given.refresh(), false, 'the cache is fresh');
+  assert.equal(given.list({ backend: elsewhere.backend }).length, 1); assert.ok(given.binding(projectToolName(elsewhere.backend, environmentUid, releaseUid, 'metrics')), 'a binding resolves whatever its backend');
+  await given.refresh(true);
+  assert.deepEqual(given.list().map(d => d.description), ['MainSequence Metrics [Research]: Inspect metrics']); assert.equal(f.changed, 1, 'the change is announced once');
   assert.equal(readProjectToolCatalogFile(f.file).connections.length, 2, 'the other backend\'s connection is kept in the shared file');
+});
+
+test('a connection whose read fails is written as unavailable with its earlier tools, never as an empty healthy scope; the mark is in the file for every host and clears on the next successful read', async t => {
+  let mode = 'failing';
+  const f = await fixture(t, request => mode === 'failing' && request.action === 'mcp-tools'
+    ? failure(request.action, 'BACKEND_UNREACHABLE', 'The project MCP initialize request to https://project.example.test timed out after 120 s. It was not retried.') : healthy()(request));
+  assert.equal(await f.catalog.refresh(true), true, 'the refresh completes and writes what it learned');
+  const written = readProjectToolCatalogFile(f.file);
+  assert.equal(written.connections.length, 1, 'the connection exists in the saved connections, so it exists in the catalog');
+  assert.deepEqual(written.connections[0].tools, []); assert.equal(written.connections[0].unavailable.code, 'BACKEND_UNREACHABLE');
+  assert.match(written.connections[0].unavailable.message, /timed out after 120 s/); assert.ok(Date.parse(written.connections[0].unavailable.at) > 0);
+  assert.deepEqual(f.catalog.list(), [], 'no tool is registered for it');
+  const state = f.catalog.state();
+  assert.deepEqual(state.unavailable, ['Metrics']); assert.equal(state.retained, 0); assert.equal(state.error, null); assert.equal(state.connections[0].unavailable.code, 'BACKEND_UNREACHABLE');
+  // Another host's process (the mcp-catalog action is one) reads the mark from the file.
+  const other = createProjectToolCatalog({ file: f.file, backend, dispatch: () => healthy() });
+  assert.deepEqual(other.state().unavailable, ['Metrics']); assert.deepEqual(other.view({ backend }).unavailable, ['Metrics']);
+  mode = 'healthy'; await f.catalog.refresh(true);
+  assert.equal(readProjectToolCatalogFile(f.file).connections[0].unavailable, undefined, 'a successful read clears the mark');
+  assert.deepEqual(f.catalog.state().unavailable, []); assert.equal(f.catalog.list().length, 1);
+  mode = 'failing'; await f.catalog.refresh(true);
+  assert.equal(f.catalog.list().length, 1, 'a later failure keeps the tools it had'); assert.deepEqual(f.catalog.state().unavailable, ['Metrics']); assert.equal(f.catalog.state().retained, 1);
+  assert.equal(readProjectToolCatalogFile(f.file).connections[0].unavailable.code, 'BACKEND_UNREACHABLE');
+  mode = 'healthy'; await f.catalog.update(releaseUid, [metrics]);
+  assert.equal(readProjectToolCatalogFile(f.file).connections[0].unavailable, undefined, 'an explicit catalog read is a successful read');
+});
+
+test('a refresh ends within its budget: connections not read by then are unavailable, their earlier tools stay, and the dispatcher is released', async t => {
+  const second = { ...row, resource_release_uid: '30000000-0000-4000-8000-000000000002', name: 'Slow' };
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ms-catalog-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'catalog.json'), signals = [];
+  await fs.writeFile(file, JSON.stringify({ version: 1, updatedAt: '2020-01-01T00:00:00.000Z', connections: [{ backend, releaseUid, environmentUid, environmentName: 'Research', name: 'Metrics', tools: [metrics] }] }));
+  const hanging = request => request.action === 'mcp-tools' ? new Promise(() => {}) : healthy(undefined, [row, second])(request);
+  const catalog = createProjectToolCatalog({ file, budgetMs: 200, dispatch: signal => { signals.push(signal); return hanging; } });
+  const started = Date.now();
+  assert.equal(await catalog.refresh(true), true);
+  assert.ok(Date.now() - started < 2_000, 'the refresh returned at its budget, not after every hung read');
+  const state = catalog.state();
+  assert.deepEqual(state.unavailable, ['Metrics', 'Slow']); assert.equal(state.retained, 1); assert.equal(state.error, null);
+  assert.equal(catalog.list().length, 1, 'Metrics keeps its earlier tool');
+  const written = readProjectToolCatalogFile(file);
+  assert.ok(written.connections.every(connection => connection.unavailable.code === 'TIMEOUT' && /within the 200 ms refresh budget/.test(connection.unavailable.message)), JSON.stringify(written.connections));
+  assert.ok(signals.length && signals.every(signal => signal.aborted), 'the hung reads were abandoned with the refresh');
+  // The reader alone reports how long it took and what it left unread.
+  const read = await readProjectToolCatalog(hanging, { backend, budgetMs: 100 });
+  assert.ok(read.durationMs >= 100 && read.durationMs < 1_500); assert.deepEqual(read.unavailable, ['Metrics', 'Slow']); assert.equal(read.catalog.connections.length, 2);
+  assert.ok(readProjectToolCatalog(healthy(), { backend }).then(result => result.durationMs >= 0 && result.unavailable.length === 0));
 });
 
 test('one process refreshes at a time; the others reuse its file, a stale lock is cleared, and a waiting refresh takes the lock when it is freed', async t => {
@@ -219,7 +273,7 @@ test('one process refreshes at a time; the others reuse its file, a stale lock i
   assert.equal(f.catalog.state().error, null, 'a background refresh that found a live lock is not an error');
   const old = new Date(Date.now() - 11 * 60_000); await fs.utimes(f.file + '.lock', old, old);
   await f.catalog.refresh(true); assert.equal(f.actions.length, 4); assert.equal(await fs.stat(f.file + '.lock').catch(e => e.code), 'ENOENT');
-  const other = createProjectToolCatalog({ file: f.file, dispatch: () => async request => { if (request.action === 'auth-status') return healthy()(request); throw new Error('the other process must not read'); } });
+  const other = createProjectToolCatalog({ file: f.file, backend, dispatch: () => async request => { if (request.action === 'auth-status') return healthy()(request); throw new Error('the other process must not read'); } });
   assert.equal(other.list().length, 1, 'a second server process reads the shared cache');
   await new Promise(resolve => setTimeout(resolve, 20));
   await f.catalog.update(releaseUid, [metrics, { name: 'export', inputSchema: { type: 'object' } }]);
@@ -253,7 +307,7 @@ test('a disabled catalog still serves the cache but never reads or writes on its
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ms-catalog-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'catalog.json');
   await fs.writeFile(file, JSON.stringify({ version: 1, updatedAt: '2020-01-01T00:00:00.000Z', connections: [{ backend, releaseUid, environmentUid, environmentName: 'Research', name: 'Metrics', tools: [metrics] }] }));
-  const catalog = createProjectToolCatalog({ file, disabled: true, dispatch: () => async () => { throw new Error('disabled catalogs do not dispatch'); } });
+  const catalog = createProjectToolCatalog({ file, backend, disabled: true, dispatch: () => async () => { throw new Error('disabled catalogs do not dispatch'); } });
   assert.equal(catalog.list().length, 1);
   assert.equal(await catalog.refresh(true), false); await catalog.update(releaseUid, []);
   assert.equal(catalog.list().length, 1);
@@ -332,6 +386,10 @@ test('mcp-catalog answers from the shared file at once, re-reads the saved conne
   const degraded = await f.create().dispatch({ action: 'mcp-catalog', backend, refresh: 'force' });
   assert.equal(degraded.status, 'success', degraded.summary); assert.deepEqual(degraded.data.unavailable, ['metatable-mcp']); assert.equal(degraded.data.retained, 1); assert.equal(degraded.data.count, 1);
   assert.match(degraded.summary, /metatable-mcp could not be read now; earlier tools stay registered/);
+  assert.equal(degraded.data.connections[0].unavailable.code, 'BACKEND_UNREACHABLE');
+  // The next process (a Claude Desktop worker is one per action) sees the mark from the file, with no refresh of its own.
+  const seen = await f.create().dispatch({ action: 'mcp-catalog', backend });
+  assert.equal(seen.data.refreshed, false); assert.deepEqual(seen.data.unavailable, ['metatable-mcp']); assert.match(seen.summary, /could not be read now/);
 });
 
 test('mcp-tool-call answers in the shared result shape and honours a tool\'s advertised timeout', async t => {
