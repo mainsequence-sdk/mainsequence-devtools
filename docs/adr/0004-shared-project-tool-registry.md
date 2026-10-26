@@ -94,7 +94,13 @@ Additive to the existing `createDevTools()` surface; nothing existing changes sh
   whose catalog cannot be read keeps its `previous` tools and is listed as
   `unavailable`; a removed connection loses its tools. No `expectedAccount` snapshot is
   attached: a registered tool is bound to a saved connection, and the session for that
-  connection's backend is verified when the tool is called.
+  connection's backend is verified when the tool is called. Since 0.3.14 the whole read
+  runs within one budget (`budgetMs`, default 300 s, `DEFAULT_PROJECT_REFRESH_BUDGET_MS`):
+  a connection not read by then, like one whose read failed, stays in the catalog marked
+  `unavailable: { at, code, message }` with its earlier tools, so a scope whose
+  connections exist is never written empty and healthy, and the mark is in the file, where
+  a host whose process did not run the refresh still sees it. The first release wrote an
+  empty scope after a 773 s refresh and reported nothing; this is the correction.
 - `createProjectToolCatalog({ file?, dispatch, staleMs?, notify?, disabled? })`: the
   on-disk catalog (default `codex-tool-catalog.json` is renamed to a host-neutral
   `project-tool-catalog.json` beside `mcp-connections.json`), with atomic writes, a lock
@@ -104,12 +110,17 @@ Additive to the existing `createDevTools()` surface; nothing existing changes sh
   host's change announcement. It stores schemas and labels only; never credentials,
   tool results or tokens. Because the file is shared by every host on the machine, a
   refresh replaces only the connections in its scope (the backend, and the environment
-  when given) and carries the rest over, and `list()`/`state()` are scoped to the current
-  account's backend once a refresh has learned it from `auth-status`, so another
-  backend's cached connections stay out of a host's tool list. `refresh(force, { scope?,
-  waitMs? })` resolves to whether this process read and wrote the catalog; with `waitMs`
-  it waits for another process's lock instead of skipping, and reports `PROJECT_BUSY`
-  in its state when the wait runs out.
+  when given) and carries the rest over, and `list()`/`state()` are scoped to the host's
+  backend: the one given as `backend`, or resolved by `ready()` without any network
+  request the way `auth-status` resolves it (process environment, shared preferences,
+  default), or learned from a refresh. Until the backend is known a listing is empty,
+  never another backend's tools (the first release listed every cached scope on a fresh
+  server's first `tools/list`; a host now awaits `ready()` before answering it).
+  `refresh(force, { scope?, waitMs? })` resolves to whether this process read and wrote
+  the catalog; with `waitMs` it waits for another process's lock instead of skipping, and
+  reports `PROJECT_BUSY` in its state when the wait runs out. A refresh ends its
+  dispatcher's signal when it returns, so a read the budget left behind cannot keep a
+  socket or the lock.
 - `mainSequenceStateDirectory(env)`: the one place that knows
   `~/Library/Application Support/MainSequenceCLI`, `%APPDATA%\MainSequenceCLI` and
   `~/.config/mainsequence`, used by the connection store and the catalog.
