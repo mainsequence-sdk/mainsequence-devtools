@@ -100,7 +100,7 @@ export async function readMcpResponse(response: Response, message: Record<string
   }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new ToolingError(response.status === 401 || response.status === 403 ? 'AUTH_REJECTED' : 'API_ERROR',
+    throw new ToolingError(response.status === 401 ? 'AUTH_REJECTED' : response.status === 403 ? 'FORBIDDEN' : 'API_ERROR',
       'The ' + target + ' returned HTTP ' + response.status + ' for ' + describeMcpMessage(message) + '.');
   }
   if (!Object.hasOwn(message, 'id')) {

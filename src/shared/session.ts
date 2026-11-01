@@ -34,6 +34,15 @@ function expiredOn(token: string): string {
   const at = expiry(token);
   return at && Date.parse(at) <= Date.now() ? ` on ${at.slice(0, 16).replace('T', ' ')} UTC` : '';
 }
+/** A saved login lasts as long as its refresh token; the backend refuses it after that `exp`. */
+function ended(session: MachineSession | null | undefined): boolean {
+  const at = session?.refresh ? expiry(session.refresh) : undefined;
+  return !!at && Date.parse(at) <= Date.now();
+}
+/** Said instead of contacting the backend once the saved login has ended. */
+function sessionEnded(backend: string, session: MachineSession, code: 'AUTH_REJECTED' | 'NOT_AUTHENTICATED' = 'AUTH_REJECTED'): ToolingError {
+  return new ToolingError(code, `The saved session for ${backend} ended${expiredOn(session.refresh)}. Sign in again.`);
+}
 /** Say which credentials the backend refused and how to repair them; no token value is included. */
 function refusedCredentials(source: 'machine' | 'environment', backend: string, token: string): ToolingError {
   const when = expiredOn(token);
@@ -157,7 +166,10 @@ export class MachineSessionService implements SessionService {
         headers: { 'Content-Type': 'application/json', ...(apiPath === '/mcp' ? { Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': '2025-11-25' } : {}), ...(access ? { Authorization: `Bearer ${access}` } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body)
       });
-      if (response.status === 401 || response.status === 403) throw new ToolingError('AUTH_REJECTED', 'The backend rejected the selected credentials.');
+      if (response.status === 401) throw new ToolingError('AUTH_REJECTED', 'The backend rejected the selected credentials.');
+      // 401 is the backend's answer for an expired, revoked or unknown login; 403 is a permission
+      // the account lacks, which no renewal or sign-in changes.
+      if (response.status === 403) throw new ToolingError('FORBIDDEN', `The backend ${backend} denied ${method} ${apiPath} (HTTP 403): the signed-in account does not have permission for it.`);
       if (!response.ok) throw new ToolingError('API_ERROR', `The backend ${backend} returned HTTP ${response.status} for ${method} ${apiPath}.`);
       if (apiPath === '/mcp') return await readMcpResponse(response, body as Record<string, unknown>, 'platform MCP ' + backend) as T;
       if (response.status === 204) return undefined as T;
@@ -181,6 +193,7 @@ export class MachineSessionService implements SessionService {
       const previous = await this.saved(backend);
       if (!previous?.refresh) throw new ToolingError('NOT_AUTHENTICATED', 'No refreshable machine session is saved for this backend.');
       if (expectedAccount !== undefined && previous.username && previous.username !== expectedAccount) throw this.accountChanged();
+      if (ended(previous)) throw sessionEnded(backend, previous);
       // Another host process may have renewed while this one waited for the
       // shared lease. Reuse its saved pair; never rotate it a second time.
       if (stale && previous.access && previous.access !== stale.access) {
@@ -228,23 +241,28 @@ export class MachineSessionService implements SessionService {
     let session = explicit || ((this.store || this.options.persistence) ? await this.saved(backend) : null);
     const source = explicit ? 'environment' : session ? (this.options.persistence?.mode ?? 'machine') : 'none';
     let expiresAt = expiry(session?.access || '');
-    let authenticated = Boolean(session?.access && (!expiresAt || Date.parse(expiresAt) > Date.now()) || (!explicit && session?.refresh));
+    // The end of the saved login is read from its refresh token, so an ended session is
+    // reported signed out without contacting the backend. A process identity has no renewal.
+    let sessionEndsAt = explicit ? undefined : expiry(session?.refresh || '');
+    const usableAccess = Boolean(session?.access && (!expiresAt || Date.parse(expiresAt) > Date.now()));
+    let authenticated = explicit ? usableAccess : Boolean((usableAccess || session?.refresh) && !ended(session));
     if (check) {
-      if (!authenticated) throw new ToolingError('NOT_AUTHENTICATED', 'No usable session is selected for this backend.');
-      if (authenticated) {
-        const profile = await this.request<any>(backend, 'GET', '/api/v1/users/me/');
-        const username = profile?.user?.username || profile?.username;
-        if (typeof username === 'string') session = { ...session!, username };
-        authenticated = true;
-        expiresAt = expiry((explicit || await this.saved(backend))?.access || '');
-      }
+      if (!authenticated) throw !explicit && session && ended(session) ? sessionEnded(backend, session, 'NOT_AUTHENTICATED')
+        : new ToolingError('NOT_AUTHENTICATED', 'No usable session is selected for this backend.');
+      const profile = await this.request<any>(backend, 'GET', '/api/v1/users/me/');
+      const username = profile?.user?.username || profile?.username;
+      if (typeof username === 'string') session = { ...session!, username };
+      authenticated = true;
+      const current = explicit || await this.saved(backend);
+      expiresAt = expiry(current?.access || '');
+      sessionEndsAt = explicit ? undefined : expiry(current?.refresh || '');
     }
     return {
       backend, authenticated, source,
       persistence: explicit ? 'environment' : this.options.persistence?.mode ?? (this.store ? 'machine' : 'unavailable'),
       store: this.options.persistence?.name ?? this.store?.name ?? null,
       ...(session?.username ? { username: session.username } : {}),
-      ...(expiresAt ? { expiresAt } : {}), ...(check ? { checked: true } : {})
+      ...(expiresAt ? { expiresAt } : {}), ...(sessionEndsAt ? { sessionEndsAt } : {}), ...(check ? { checked: true } : {})
     };
   }
   async request<T>(input: string, method: 'GET' | 'POST', apiPath: string, body?: unknown, retrySafe = method === 'GET', options?: { timeoutMs?: number }): Promise<T> {
@@ -289,7 +307,8 @@ export class MachineSessionService implements SessionService {
         const source = current.source === 'environment' ? 'environment' : this.options.persistence?.mode ?? 'machine';
         return { backend, authenticated:true, source, persistence:source,
           store:source === 'environment' ? null : this.options.persistence?.name ?? this.store?.name ?? null,
-          username:expectedAccount, expiresAt:expiry(current.session.access), checked:true };
+          username:expectedAccount, expiresAt:expiry(current.session.access),
+          ...(source !== 'environment' && expiry(current.session.refresh) ? {sessionEndsAt:expiry(current.session.refresh)} : {}), checked:true };
       },
       login: unsupported, logout: unsupported, refresh: unsupported,
       sanitize: text => this.sanitize(text),
@@ -301,6 +320,7 @@ export class MachineSessionService implements SessionService {
     if (options?.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > 300000)) throw new ToolingError('INVALID_REQUEST', 'Request timeout must be between 1 and 300000 milliseconds.');
     const backend = requireBackend(input);
     let { session, source } = await this.selected(backend);
+    if (source === 'machine' && ended(session)) throw sessionEnded(backend, session);
     if (!session.access || (expiry(session.access) && Date.parse(expiry(session.access)!) <= Date.now() + 30_000)) {
       if (source === 'machine') session = await this.renew(backend, expectedAccount, session);
       else if (!session.access) throw new ToolingError('NOT_AUTHENTICATED', 'The explicit environment has no access token.');
@@ -342,7 +362,8 @@ export class MachineSessionService implements SessionService {
   }
   private async machineStatus(backend: string): Promise<SessionStatus> {
     const session = await this.saved(backend);
-    return { backend, authenticated: Boolean(session?.access || session?.refresh), source: session ? (this.options.persistence?.mode ?? 'machine') : 'none', persistence: this.options.persistence?.mode ?? 'machine', store: this.options.persistence?.name ?? this.store?.name ?? null, username: session?.username, expiresAt: expiry(session?.access || '') };
+    const sessionEndsAt = expiry(session?.refresh || '');
+    return { backend, authenticated: Boolean((session?.access || session?.refresh) && !ended(session)), source: session ? (this.options.persistence?.mode ?? 'machine') : 'none', persistence: this.options.persistence?.mode ?? 'machine', store: this.options.persistence?.name ?? this.store?.name ?? null, username: session?.username, expiresAt: expiry(session?.access || ''), ...(sessionEndsAt ? { sessionEndsAt } : {}) };
   }
   async logout(input: string): Promise<{ revoked: boolean }> {
     const backend = requireBackend(input);

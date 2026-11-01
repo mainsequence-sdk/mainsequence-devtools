@@ -142,20 +142,67 @@ test('login obtains a missing username from the existing profile endpoint', asyn
   assert.equal(result.status, 'success'); assert.equal(result.data.username, 'José'); assert.equal(readSession(store, backend).username, 'José');
 });
 
-test('a refused renewal names the saved session, its expiry and the sign-in, and keeps the session', async t => {
-  const { backend } = await fixtureBackend(t);
-  const part = value => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const expiredRefresh = `${part({ alg: 'none' })}.${part({ exp: Math.floor(Date.now() / 1000) - 3600 })}.signature`;
-  const store = memoryStore(); saveSession(store, backend, { username: 'shared', access: 'stale-access', refresh: expiredRefresh });
+const jwtPart = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+/** An unsigned token carrying only `exp`, seconds from now; the client reads the claim, never the signature. */
+const tokenEnding = seconds => `${jwtPart({ alg: 'none' })}.${jwtPart({ exp: Math.floor(Date.now() / 1000) + seconds })}.signature`;
+
+test('an ended saved session is signed out without contacting the backend, and is kept for the sign-in', async t => {
+  const { backend, calls } = await fixtureBackend(t);
+  const endedRefresh = tokenEnding(-3600);
+  const store = memoryStore(); saveSession(store, backend, { username: 'shared', access: tokenEnding(-3000), refresh: endedRefresh });
+  const tooling = createDevTools({ host: createNodeHost(), env: {}, store });
+  const status = await tooling.dispatch({ action: 'auth-status', backend });
+  assert.equal(status.status, 'success'); assert.equal(status.data.authenticated, false); assert.equal(status.data.username, 'shared');
+  assert.equal(Date.parse(status.data.sessionEndsAt), (Math.floor(Date.now() / 1000) - 3600) * 1000);
+  assert.match(status.summary, /^The saved session ended on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\. Sign in again\.$/);
+  const ended = new RegExp(`^The saved session for ${backend.replace(/[.]/g, '\\.')} ended on \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} UTC\\. Sign in again\\.$`);
+  const checked = await tooling.dispatch({ action: 'auth-status', backend, check: true });
+  assert.equal(checked.error.code, 'NOT_AUTHENTICATED'); assert.match(checked.error.message, ended);
+  for (const action of ['repositories', 'refresh-token']) {
+    const result = await tooling.dispatch({ action, backend });
+    assert.equal(result.error.code, 'AUTH_REJECTED'); assert.match(result.error.message, ended);
+  }
+  // An access token still inside its five minutes does not outlive the login it belongs to.
+  saveSession(store, backend, { username: 'shared', access: tokenEnding(240), refresh: endedRefresh });
+  assert.equal((await tooling.dispatch({ action: 'auth-status', backend })).data.authenticated, false);
+  assert.equal((await tooling.dispatch({ action: 'repositories', backend })).error.code, 'AUTH_REJECTED');
+  assert.equal(calls.length, 0);
+  assert.equal(readSession(store, backend).refresh, endedRefresh);
+});
+
+test('a live session names when it ends; a revoked one is refused by the backend and says so', async t => {
+  const { backend, calls } = await fixtureBackend(t);
+  const refresh = tokenEnding(4 * 86400), store = memoryStore();
+  saveSession(store, backend, { username: 'shared', access: 'stale-access', refresh });
+  const status = await createDevTools({ host: createNodeHost(), env: {}, store }).dispatch({ action: 'auth-status', backend });
+  assert.equal(status.data.authenticated, true);
+  assert.equal(Date.parse(status.data.sessionEndsAt), (Math.floor(Date.now() / 1000) + 4 * 86400) * 1000);
+  assert.match(status.summary, /^The selected session is usable until \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\.$/);
   const fetchImpl = async (url, init) => String(url).endsWith('/auth/jwt-token/token/refresh/')
-    ? new Response(JSON.stringify({ detail: 'Token is invalid or expired' }), { status: 401 })
+    ? new Response(JSON.stringify({ detail: 'Token is blacklisted' }), { status: 401 })
     : fetch(url, init);
   const result = await createDevTools({ host: createNodeHost(), env: {}, store, fetch: fetchImpl }).dispatch({ action: 'repositories', backend });
   assert.equal(result.error.code, 'AUTH_REJECTED');
-  assert.match(result.error.message, /^The backend refused the saved session for http:\/\/127\.0\.0\.1:\d+: it expired on \d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC\. Sign in again\.$/);
-  assert.equal(readSession(store, backend).refresh, expiredRefresh);
+  assert.match(result.error.message, /^The backend refused the saved session for http:\/\/127\.0\.0\.1:\d+: it was revoked or belongs to another backend\. Sign in again\.$/);
+  assert.equal(readSession(store, backend).refresh, refresh); assert.equal(calls.length, 1);
 });
 
+test('403 is a missing permission: no renewal, no retry and no sign-in prompt', async t => {
+  const { backend, calls } = await fixtureBackend(t);
+  const store = memoryStore(); saveSession(store, backend, { username: 'shared', access: 'fixture-access-1', refresh: 'fixture-refresh-1' });
+  const fetchImpl = async (url, init) => new URL(url).pathname === '/api/v1/code-repositories/'
+    ? (calls.push({ path: '/api/v1/code-repositories/' }), new Response(JSON.stringify({ detail: 'You do not have permission to perform this action.' }), { status: 403 }))
+    : fetch(url, init);
+  const result = await createDevTools({ host: createNodeHost(), env: {}, store, fetch: fetchImpl }).dispatch({ action: 'repositories', backend });
+  assert.equal(result.error.code, 'FORBIDDEN');
+  assert.match(result.error.message, /^The backend http:\/\/127\.0\.0\.1:\d+ denied GET \/api\/v1\/code-repositories\/ \(HTTP 403\): the signed-in account does not have permission for it\.$/);
+  assert.deepEqual(calls.map(call => call.path), ['/api/v1/code-repositories/']);
+  assert.equal(readSession(store, backend).access, 'fixture-access-1');
+  const { readMcpResponse } = require('../dist/shared/mcpTransport.js');
+  for (const [status, code] of [[401, 'AUTH_REJECTED'], [403, 'FORBIDDEN'], [500, 'API_ERROR']]) {
+    await assert.rejects(readMcpResponse(new Response('{}', { status }), { jsonrpc: '2.0', id: 1, method: 'tools/list' }, 'project MCP https://crm.example'), error => error.code === code);
+  }
+});
 
 test('per-request timeout accommodates the advertised agent deadline and rejects values beyond the cap before HTTP', async t => {
   const { backend, calls } = await fixtureBackend(t);
