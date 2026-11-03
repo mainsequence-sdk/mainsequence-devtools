@@ -1,6 +1,6 @@
 import { McpConnections, McpRequest, createMcpConnectionCache, type McpConnectionCache } from './mcp';
 import { AgentClient, AgentRequest, isAgentAction } from './agents';
-import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, ToolingError } from './models';
+import { ActionRequest, ActionResult, HostServices, ProjectAction, SessionService, SessionStatus, ToolingError } from './models';
 import { MachineSessionService } from './session';
 import { listRepositories, projectContext, resolveBackend, resolveRepository } from './repositories';
 import { DRY_RUN_ACTIONS, projectCapabilities, runProjectAction, setupRepository, withProjectLock } from './projects';
@@ -12,6 +12,12 @@ import { currentDirectory } from './workingDirectory';
 import { createProjectToolCatalog, projectToolResult, type ProjectToolCatalogView, type ProjectToolScope } from './projectTools';
 
 const UUID = /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i;
+/** Names when the saved login ends, or ended, so a person reading the summary knows to sign in. */
+function authSummary(status: SessionStatus): string {
+  const at = status.sessionEndsAt ? status.sessionEndsAt.slice(0, 16).replace('T', ' ') + ' UTC' : '';
+  if (status.authenticated) return at ? `The selected session is usable until ${at}.` : 'The selected session is usable.';
+  return at && Date.parse(status.sessionEndsAt!) <= Date.now() ? `The saved session ended on ${at}. Sign in again.` : 'No usable session is selected.';
+}
 export function createDevTools(options: ConstructorParameters<typeof MachineSessionService>[1] & {
   host: HostServices; session?: SessionService & { sanitize?(text: string): string }; allowMcpSkills?: boolean; allowLegacyProjectCredentials?: boolean;
   mcpConnectionsPath?: string; mcpCache?:McpConnectionCache;
@@ -86,7 +92,7 @@ export function createDevTools(options: ConstructorParameters<typeof MachineSess
             ? await operation() : await withProjectLock(context.gitCommonDir, operation);
         }
       }
-      const summary = action === 'auth-status' ? ((data as any).authenticated ? 'The selected session is usable.' : 'No usable session is selected.')
+      const summary = action === 'auth-status' ? authSummary(data as SessionStatus)
         : action === 'login' ? 'Signed in; the machine session was saved and verified.'
         : action === 'refresh-token' ? 'The saved machine session was renewed.'
         : action === 'logout' ? ((data as any).revoked ? 'The machine session was revoked and removed.' : 'The local machine session was removed; remote revocation was not confirmed.')

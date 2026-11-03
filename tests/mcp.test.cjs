@@ -413,10 +413,10 @@ test('nameless release details still validate identity and all required MCP meta
   assert.equal(await fs.readFile(f.file, 'utf8'), saved);
 });
 
-test('revocation, removed capabilities, changed URLs, and a wrong credential target stop before project execution', async t => {
+test('withdrawn access, removed capabilities, changed URLs, and a wrong credential target stop before project execution', async t => {
   const f = await fixture(t); await f.dispatch('mcp-add');
   f.state.denied = true;
-  assert.equal((await f.dispatch('mcp-tools')).error.code, 'AUTH_REJECTED');
+  assert.equal((await f.dispatch('mcp-tools')).error.code, 'FORBIDDEN');
   f.state.denied = false; f.state.noMcp = true;
   assert.equal((await f.dispatch('mcp-tools')).error.code, 'API_ERROR');
   f.state.noMcp = false; f.state.endpoint = 'https://changed.example/mcp';

@@ -23,7 +23,7 @@ export type ActionRequest = McpRequest | AgentRequest | OrganizationProjectReque
   })
   | (BackendSelection & { action: 'setup'; repositoryUid: string; branch: string; baseDir: string; install?: boolean });
 
-export type ErrorCode = 'CURRENT_DIRECTORY_UNAVAILABLE' | 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'MCP_TOOL_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
+export type ErrorCode = 'CURRENT_DIRECTORY_UNAVAILABLE' | 'INVALID_REQUEST' | 'NOT_AUTHENTICATED' | 'AUTH_REJECTED' | 'FORBIDDEN' | 'STORE_UNAVAILABLE' | 'STORE_ERROR' | 'PERSISTENCE_FAILED' | 'BACKEND_UNREACHABLE' | 'API_ERROR' | 'MCP_TOOL_ERROR' | 'BROWSER_FAILED' | 'LOGIN_TIMEOUT' | 'INVALID_CALLBACK' | 'PROJECT_NOT_FOUND' | 'INVALID_GIT_CONTEXT' | 'PROJECT_TYPE_REQUIRED' | 'BACKEND_MISMATCH' | 'MISSING_PREREQUISITE' | 'UNSUPPORTED_ACTION' | 'PROJECT_BUSY' | 'PROCESS_FAILED' | 'PROCESS_TIMEOUT' | 'CANCELLED' | 'INTERNAL_ERROR';
 export class ToolingError extends Error {
   constructor(public readonly code: ErrorCode, message: string) { super(message); this.name = 'ToolingError'; }
 }
@@ -35,6 +35,8 @@ export type SessionStatus = {
   store: string | null;
   username?: string;
   expiresAt?: string;
+  /** When the saved login ends: its refresh token's expiry. From then on the session is signed out. */
+  sessionEndsAt?: string;
   checked?: boolean;
 };
 export type ActionCapability = { action: ProjectAction; state: 'available' | 'unavailable' | 'unsupported'; reason?: string };

@@ -49,6 +49,15 @@ machine session; it does not replace a token exported into another shell. `logou
 removes this backend's local record and separately reports whether remote revocation
 completed.
 
+A sign-in lasts as long as its refresh token: the backend ends it a fixed time after
+sign-in (five days by default), however often it is renewed. `auth-status` reports that
+moment as `sessionEndsAt` and names it in its summary. Once it has passed, the session
+reads as signed out without contacting the backend, and every request answers "The saved
+session for … ended on … UTC. Sign in again." A 401 means the backend no longer accepts
+the login (expired, revoked, or another backend's): devtools renews once and otherwise asks
+for a new sign-in. A 403 is a permission the account lacks: it is reported as `FORBIDDEN`,
+with no renewal, no retry and no sign-in prompt.
+
 A deliberately supplied `MAINSEQUENCE_ACCESS_TOKEN` with its matching
 `MAINSEQUENCE_ENDPOINT` is a process or CI identity. A rejected process identity never
 falls back to another saved identity. Runtime credentials are a separate application lane
