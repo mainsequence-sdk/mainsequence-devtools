@@ -23,11 +23,14 @@ export async function readDesktopPreferences(options: Options = {}) {
   const config = await read(location(options));
   return { ...await readWorkspacePreferences(options), commandCenterUrl: typeof config.command_center_url === 'string' ? config.command_center_url : '' };
 }
-/** Updates only non-secret workspace fields, preserving existing CLI settings. */
-export async function writeWorkspacePreferences(input: { backend: string; baseDir: string; commandCenterUrl?: string }, options: Options = {}) {
-  const backend = requireBackend(input.backend);
-  const baseDir = repositoriesFolder(input.baseDir, options.homeDir, 'Repositories folder');
-  const commandCenterUrl = input.commandCenterUrl ? requireBackend(input.commandCenterUrl) : '';
+/** Updates only the non-secret workspace fields given, preserving every other CLI setting: a host that
+ * shares only the repositories folder (Claude Desktop) saves `{ baseDir }` alone. */
+export async function writeWorkspacePreferences(input: { backend?: string; baseDir?: string; commandCenterUrl?: string }, options: Options = {}) {
+  if (input.backend === undefined && input.baseDir === undefined && input.commandCenterUrl === undefined) throw new ToolingError('INVALID_REQUEST', 'Name a workspace setting to save.');
+  const updates: Record<string, string> = {};
+  if (input.backend !== undefined) updates.backend_url = requireBackend(input.backend);
+  if (input.baseDir !== undefined) updates.mainsequence_path = repositoriesFolder(input.baseDir, options.homeDir, 'Repositories folder');
+  if (input.commandCenterUrl !== undefined) updates.command_center_url = input.commandCenterUrl ? requireBackend(input.commandCenterUrl) : '';
   const file = location(options); await fs.mkdir(path.dirname(file), { recursive: true });
   let lock;
   try { lock = await fs.open(file + '.preferences.lock', 'wx', 0o600); }
@@ -35,7 +38,7 @@ export async function writeWorkspacePreferences(input: { backend: string; baseDi
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
     const config = await read(file);
-    await fs.writeFile(temporary, JSON.stringify({ ...config, backend_url: backend, mainsequence_path: baseDir, command_center_url: commandCenterUrl }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    await fs.writeFile(temporary, JSON.stringify({ ...config, ...updates }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     await fs.rename(temporary, file);
     return readDesktopPreferences(options);
   } finally { await fs.rm(temporary, { force: true }); await lock.close(); await fs.unlink(file + '.preferences.lock'); }

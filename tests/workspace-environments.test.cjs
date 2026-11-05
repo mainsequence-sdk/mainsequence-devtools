@@ -11,10 +11,10 @@ const row=(n,environment=envA)=>({backend,name:'Project',resource_release_uid:ui
 async function temporary(t){const dir=await fs.mkdtemp(path.join(os.tmpdir(),'ms-settings-env-'));t.after(()=>fs.rm(dir,{recursive:true,force:true}));return dir;}
 test('workspace values resolve without authentication, preserve configuration, and honor precedence', async t=>{
  const dir=await temporary(t),configPath=path.join(dir,'config.json');
- assert.deepEqual(await readWorkspacePreferences({env:{},homeDir:dir,configPath}),{backend:'https://api.main-sequence.app',baseDir:path.join(dir,'mainsequence')});
+ assert.deepEqual(await readWorkspacePreferences({env:{},homeDir:dir,configPath}),{backend:'https://api.main-sequence.app',baseDir:path.join(dir,'mainsequence'),baseDirSaved:false});
  const original=JSON.stringify({backend_url:'http://127.0.0.1:8000',mainsequence_path:dir,provider:{secret:'fixture-secret'}});
  await fs.writeFile(configPath,original);
- assert.deepEqual(await readWorkspacePreferences({env:{},homeDir:dir,configPath}),{backend:'http://127.0.0.1:8000',baseDir:dir});
+ assert.deepEqual(await readWorkspacePreferences({env:{},homeDir:dir,configPath}),{backend:'http://127.0.0.1:8000',baseDir:dir,baseDirSaved:true});
  assert.equal((await readWorkspacePreferences({env:{MAINSEQUENCE_ENDPOINT:'https://override.example'},homeDir:dir,configPath})).backend,'https://override.example');
  assert.equal(await fs.readFile(configPath,'utf8'),original);
 });

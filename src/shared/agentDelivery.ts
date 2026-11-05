@@ -34,6 +34,8 @@ const uuid = (value: unknown): string => {
 const failStore = () => new ToolingError('STORE_ERROR', 'Saved agent requests could not be read safely. Existing requests were kept; no message was resent.');
 const live = (pid: number) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== 'ESRCH'; } };
 const view = (r: StoredRequest): AgentDeliveryRequest => { const { owner: _, ...publicRequest } = r; return structuredClone(publicRequest); };
+/** A live owner writes its record within moments of creating the lock; an empty lock this old was left by a killed process. */
+const EMPTY_LOCK_STALE_MS = 10_000;
 const finished = (r: StoredRequest) => !['pending', 'preparing', 'sending'].includes(r.state);
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const defaultDirectory = () => path.join(process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'MainSequenceCLI')
@@ -75,23 +77,33 @@ export class AgentDelivery {
     try {
       const stat = await handle.stat();
       if (lockRead && stat.nlink === 0) throw Object.assign(new Error('The lock was released while opening it.'), { code: 'ENOENT' });
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 36_000_000 || (process.getuid && stat.uid !== process.getuid())) throw failStore();
+      // A lock is linked into place from its owner's private file, so it briefly has two names.
+      if (!stat.isFile() || stat.nlink !== 1 && !(lockRead && stat.nlink === 2) || stat.size > 36_000_000 || (process.getuid && stat.uid !== process.getuid())) throw failStore();
       return await handle.readFile('utf8');
     } finally { await handle.close(); }
   }
   private async locked<T>(key: string, run: (state: State, save: () => Promise<void>) => Promise<T>): Promise<T> {
     await this.secureDirectory();
     const file = path.join(this.directory, key + '.json'), lock = file + '.lock';
-    const owner = { pid: process.pid, token: randomUUID() }; let guard;
+    const owner = { pid: process.pid, token: randomUUID() }; let acquired = false;
     const deadline = Date.now() + 3000;
-    while (!guard) {
-      try { guard = await fs.open(lock, 'wx', 0o600); }
-      catch (error) {
+    while (!acquired) {
+      // The lock appears with its owner already in it: the record is written to a private file, which is
+      // then linked into place, failing while another lock exists. A process killed at any moment leaves
+      // no lock, or one naming a dead owner that the next caller reclaims; never an empty one.
+      const pending = `${lock}.${owner.token}.tmp`;
+      try {
+        const handle = await fs.open(pending, 'wx', 0o600);
+        try { await handle.writeFile(JSON.stringify(owner)); await handle.sync(); } finally { await handle.close(); }
+        await fs.link(pending, lock); acquired = true;
+      } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw failStore();
         let previous: Owner;
         try { previous = JSON.parse(await this.readFile(lock, true)); }
         catch (e) {
-          // A new exclusive file can briefly precede its owner record. Never reclaim it.
+          // An empty lock is an older version's, made before its owner record was written: still being
+          // written while it is new, left by a killed process once it is stale.
+          if (e instanceof SyntaxError && await this.reclaimEmptyLock(lock)) continue;
           if (Date.now() >= deadline) throw failStore();
           if (e instanceof SyntaxError || (e as NodeJS.ErrnoException).code === 'ENOENT') { await sleep(25); continue; }
           throw failStore();
@@ -102,15 +114,16 @@ export class AgentDelivery {
           const claim = lock + '.reclaim-' + uuid(previous.token);
           try { const handle = await fs.open(claim, 'wx', 0o600); await handle.close(); }
           catch { throw new ToolingError('PROJECT_BUSY', 'Agent storage recovery is already running. Try reading status again.'); }
+          // An owner killed between linking its lock and removing its private file left that second name.
+          await fs.unlink(`${lock}.${uuid(previous.token)}.tmp`).catch(() => {});
           if (await this.readFile(lock) !== JSON.stringify(previous)) throw failStore();
           await fs.unlink(lock); continue;
         }
         if (Date.now() >= deadline) throw new ToolingError('PROJECT_BUSY', 'Another agent request is updating local storage. Try reading status again.');
         await sleep(25);
-      }
+      } finally { await fs.unlink(pending).catch(() => {}); }
     }
     try {
-      await guard.writeFile(JSON.stringify(owner)); await guard.sync();
       let state: State;
       try { state = JSON.parse(await this.readFile(file)); }
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw failStore(); state = { version: 1, scope: key, requests: {} }; }
@@ -148,7 +161,18 @@ export class AgentDelivery {
         finally { await fs.unlink(temporary).catch(() => {}); }
       };
       const result = await run(state, save); await save(); return result;
-    } finally { await guard.close(); await fs.unlink(lock); }
+    } finally { await fs.unlink(lock); }
+  }
+  /** Removes an empty lock older than any write of its owner record could take, once, under a durable claim. */
+  private async reclaimEmptyLock(lock: string): Promise<boolean> {
+    const stat = await fs.lstat(lock).catch(() => null);
+    if (!stat || !stat.isFile() || stat.size !== 0 || Date.now() - stat.mtimeMs < EMPTY_LOCK_STALE_MS) return false;
+    const claim = `${lock}.reclaim-empty-${stat.ino}-${Math.floor(stat.mtimeMs)}`;
+    try { const handle = await fs.open(claim, 'wx', 0o600); await handle.close(); }
+    catch { throw new ToolingError('PROJECT_BUSY', 'Agent storage recovery is already running. Try reading status again.'); }
+    const current = await fs.lstat(lock).catch(() => null);
+    if (!current || current.ino !== stat.ino || current.size !== 0 || current.mtimeMs !== stat.mtimeMs) return true;
+    await fs.unlink(lock); return true;
   }
   /** Prepare a stable conversation without sending an introductory message. */
   async prepare(input: AgentDeliveryScope, selection: {environmentUid:string;agentUid:string;conversationKey?:string}, signal?:AbortSignal) {

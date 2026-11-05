@@ -98,6 +98,9 @@ marker, and dispatches once. `wait` waits at most 25 seconds by default; `get` a
 `list` return saved status. A caller's AbortSignal stops its wait, while accepted work
 continues under a separate 12-minute deadline. `cancel` applies only before acceptance.
 Repeating delivery returns the existing job or exact receipt; it never replays a send.
+The lock appears with its owner's process already recorded in it, so a process killed at
+any moment leaves no lock, or one naming a dead owner that the next call reclaims. An
+empty lock left by an older version is removed once it is ten seconds old.
 
 State is stored under `MainSequenceCLI/agent-delivery-v1` in the platform application
 data directory, with mode 0700 directories and 0600 atomic files. It contains message
