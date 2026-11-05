@@ -4,7 +4,13 @@
 URL and repositories folder. It never signs in or rewrites configuration. The
 backend uses `MAINSEQUENCE_ENDPOINT`, then existing `backend_url`, then
 `https://api.main-sequence.app`. The folder uses `mainsequence_path`, otherwise
-`<home>/mainsequence`. Host-saved overrides remain the host's responsibility.
+`<home>/mainsequence`; `baseDirSaved` says which. Host-saved overrides remain the host's
+responsibility.
+
+`writeWorkspacePreferences({ backend?, baseDir?, commandCenterUrl? })` saves only the
+fields it is given into the same file the `mainsequence` CLI reads, keeping every other
+setting. The Codex plugin saves all three; Claude Desktop saves `{ baseDir }` alone, so
+both and the CLI share one repositories folder.
 
 Every action reads a repositories folder as the MainSequence CLI does
 (`repositoriesFolder(value, home?)`): `~` is the home folder, a bare name such as

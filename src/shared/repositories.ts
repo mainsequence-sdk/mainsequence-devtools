@@ -35,14 +35,16 @@ export async function resolveBackend(explicit?: string, root?: string, env: Node
 }
 
 /** Resolve non-secret workspace settings without requiring a session or writing configuration. */
-export async function readWorkspacePreferences(options: { env?: NodeJS.ProcessEnv; configPath?: string; homeDir?: string } = {}): Promise<{ backend: string; baseDir: string }> {
+export async function readWorkspacePreferences(options: { env?: NodeJS.ProcessEnv; configPath?: string; homeDir?: string } = {}): Promise<{ backend: string; baseDir: string; baseDirSaved: boolean }> {
   const env = options.env ?? process.env, home = options.homeDir ?? os.homedir();
   const directory = mainSequenceStateDirectory(env, home);
   const config = await fs.readFile(options.configPath ?? path.join(directory, 'config.json'), 'utf8')
     .then(text => JSON.parse(text)).catch(() => ({}));
   const folder = config?.mainsequence_path;
+  // `baseDirSaved`: the folder comes from the shared configuration, not the default.
+  const baseDirSaved = typeof folder === 'string' && !!folder.trim() && !/[\0\r\n]/.test(folder);
   return { backend: requireBackend(env.MAINSEQUENCE_ENDPOINT || (typeof config?.backend_url === 'string' && config.backend_url.trim()) || 'https://api.main-sequence.app'),
-    baseDir: typeof folder === 'string' && folder.trim() && !/[\0\r\n]/.test(folder) ? repositoriesFolder(folder, home) : path.join(home, 'mainsequence') };
+    baseDir: baseDirSaved ? repositoriesFolder(folder, home) : path.join(home, 'mainsequence'), baseDirSaved };
 }
 
 export async function git(host: HostServices, cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
