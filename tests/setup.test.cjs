@@ -49,7 +49,9 @@ const tools = createDevTools({host,store:null,env:{...process.env,MAINSEQUENCE_E
   await fs.unlink(lock);
   const result=await tools.dispatch(request);
   const second=await tools.dispatch(request);
-  console.log(JSON.stringify({result,second,busy,calls,checks}));
+  // A bare folder name is a folder in the home directory, as the MainSequence CLI reads it; never the working directory.
+  const homed=await tools.dispatch({...request, baseDir:'repositories in home'});
+  console.log(JSON.stringify({result,second,busy,homed,calls,checks}));
 })();
 `;
   const env = { ...process.env, HOME: home, USERPROFILE: home };
@@ -61,8 +63,10 @@ const tools = createDevTools({host,store:null,env:{...process.env,MAINSEQUENCE_E
   assert.equal(result.result.data.root, path.join(base, 'fixture-org', 'projects', 'shared-repo-1'));
   assert.equal(result.second.error.code, 'INVALID_REQUEST');
   assert.equal(result.busy.error.code, 'PROJECT_BUSY');
+  assert.equal(result.homed.status, 'success', execution.stdout);
+  assert.equal(result.homed.data.root, path.join(home, 'repositories in home', 'fixture-org', 'projects', 'shared-repo-1'));
   assert.equal(result.calls.filter(call => call.endpoint.endsWith('/add-deploy-key/')).length, 1);
-  assert.equal(result.checks, 2);
+  assert.equal(result.checks, 3, 'one key check per setup that clones');
   assert.equal(await fs.readFile(path.join(result.result.data.root, '.env'), 'utf8'), '# BEGIN MAINSEQUENCE AUTH (managed by VS Code)\nMAINSEQUENCE_ENDPOINT=https://fixture.example\n# END MAINSEQUENCE AUTH\n');
   assert.doesNotMatch(execution.stdout, /fixture-process-access|PRIVATE KEY/);
   assert.equal((await fs.readdir(path.join(home, '.ssh'))).length, 2);

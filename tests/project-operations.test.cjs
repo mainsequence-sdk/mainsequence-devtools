@@ -131,6 +131,23 @@ test('local discovery maps UID suffixes without following symlink directories', 
   assert.deepEqual(result.data.items[0], { name: 'Example', path: selection.root, repositoryUid: 'repo-1', isGitRepository: true });
 });
 
+test('the repositories folder is read as the MainSequence CLI reads it, never against the working directory', async t => {
+  const { repositoriesFolder } = require('../dist');
+  const home = path.join(path.sep, 'fixture', 'home');
+  assert.equal(repositoriesFolder('mainsequence-dev', home), path.join(home, 'mainsequence-dev'));
+  assert.equal(repositoriesFolder('  mainsequence-dev ', home), path.join(home, 'mainsequence-dev'));
+  assert.equal(repositoriesFolder('~', home), home);
+  assert.equal(repositoriesFolder('~/code/ms', home), path.join(home, 'code', 'ms'));
+  assert.equal(repositoriesFolder(path.join(path.sep, 'srv', 'ms') + path.sep, home), path.join(path.sep, 'srv', 'ms'));
+  assert.equal(repositoriesFolder('./ms', home), path.resolve('ms'));
+  for (const bad of ['', '  ', 'a\nb', undefined, 3]) assert.throws(() => repositoriesFolder(bad, home), { code: 'INVALID_REQUEST' });
+  // Listing a bare name reads the folder in the home directory, as setup clones into it.
+  const selection = await localProject(t), host = createNodeHost(), previous = process.env.HOME;
+  process.env.HOME = path.dirname(selection.baseDir); t.after(() => { process.env.HOME = previous; });
+  const result = await createProjectOperations({ host }).dispatch({ action: 'local-repositories', baseDir: path.basename(selection.baseDir), organization: selection.organization, repositories: [{ uid: 'repo-1', name: 'Example' }] });
+  assert.equal(result.status, 'success'); assert.deepEqual(result.data.items.map(item => item.path), [selection.root]);
+});
+
 test('local discovery keeps a missing base folder read-only and rejects redirected organization folders', async t => {
   const selection = await localProject(t), host = createNodeHost();
   const baseDir = path.join(selection.baseDir, 'not created');

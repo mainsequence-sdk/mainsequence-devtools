@@ -3,7 +3,7 @@ import * as path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { HostServices, SessionService, ToolingError } from './models';
 import { OrganizationProjectClient, projectUid } from './organizationProjects';
-import { canonicalRepositoryDir, projectContext, repositorySetupInfo, safeSlug } from './repositories';
+import { canonicalRepositoryDir, projectContext, repositoriesFolder, repositorySetupInfo, safeSlug } from './repositories';
 import { ExecutionState, setupRepository, withProjectLock, projectEnvironment } from './projects';
 import { repositorySshKeyIdentity } from './repositoryIdentity';
 import { requireBackend } from './session';
@@ -96,9 +96,9 @@ export async function setupOrganizationProject(input: Input, options: Options): 
   // Apply the same environment to nested Git helpers, including context and .env setup.
   for (const key of Object.keys(env)) if (key.startsWith('GIT_') && key !== 'GIT_SSH_COMMAND') delete env[key];
   const host: HostServices = { ...options.host, runProcess: spec => options.host.runProcess({ ...spec, env: spec.env ?? env }) };
-  if (typeof input.baseDir !== 'string' || !path.isAbsolute(input.baseDir) || /[\r\n\0]/.test(input.baseDir)) throw new ToolingError('INVALID_REQUEST', 'Choose an absolute repositories base folder in General.');
+  if (typeof input.baseDir !== 'string' || !input.baseDir.trim() || /[\r\n\0]/.test(input.baseDir)) throw new ToolingError('INVALID_REQUEST', 'Choose a repositories base folder in General.');
   // Resolve the base once (macOS /tmp and home aliases are legitimate). Children must be ordinary directories.
-  let base = path.resolve(input.baseDir);
+  let base = repositoriesFolder(input.baseDir);
   if (await exists(base)) base = await fs.realpath(base);
   const client = new OrganizationProjectClient(session, backend, signal);
   const { project, branches } = await client.getProject(environmentUid, uid);

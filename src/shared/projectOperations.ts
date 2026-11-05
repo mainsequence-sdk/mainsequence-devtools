@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { ActionResult, HostServices, ToolingError } from './models';
-import { git, safeSlug } from './repositories';
+import { git, repositoriesFolder, safeSlug } from './repositories';
 import { withProjectLock } from './projects';
 import { updateDevcontainerJsonc } from './devcontainerJsonc';
 
@@ -71,7 +71,7 @@ export function createProjectOperations(options: ProjectOperationOptions) {
     return safeSlug(value);
   }
   async function localContext(request: LocalSelection) {
-    const base = await realDirectory(request.baseDir, 'Repositories base folder');
+    const base = await realDirectory(repositoriesFolder(request.baseDir), 'Repositories base folder');
     const org = organization(request.organization);
     const parent = path.join(base, org, 'projects');
     const requested = absolute(request.root, 'Local repository');
@@ -118,7 +118,7 @@ export function createProjectOperations(options: ProjectOperationOptions) {
       signal?.throwIfAborted();
       let data: unknown;
       if (request.action === 'local-repositories') {
-        const requestedBase = absolute(request.baseDir, 'Repositories base folder');
+        const requestedBase = repositoriesFolder(request.baseDir);
         const baseExists = await fs.stat(requestedBase).then(() => true).catch(error => { if (isMissing(error)) return false; throw error; });
         const base = baseExists ? await realDirectory(requestedBase, 'Repositories base folder') : requestedBase;
         const org = organization(request.organization), organizationRoot = path.join(base, org, 'projects');

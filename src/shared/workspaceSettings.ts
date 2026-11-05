@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { ToolingError } from './models';
 import { requireBackend } from './session';
-import { readWorkspacePreferences } from './repositories';
+import { readWorkspacePreferences, repositoriesFolder } from './repositories';
 type Options = { env?: NodeJS.ProcessEnv; configPath?: string; homeDir?: string };
 function location(options: Options) {
   const home = options.homeDir ?? os.homedir(), env = options.env ?? process.env;
@@ -26,7 +26,7 @@ export async function readDesktopPreferences(options: Options = {}) {
 /** Updates only non-secret workspace fields, preserving existing CLI settings. */
 export async function writeWorkspacePreferences(input: { backend: string; baseDir: string; commandCenterUrl?: string }, options: Options = {}) {
   const backend = requireBackend(input.backend);
-  if (!path.isAbsolute(input.baseDir) || /[\0\r\n]/.test(input.baseDir)) throw new ToolingError('INVALID_REQUEST', 'Repositories folder must be an absolute path.');
+  const baseDir = repositoriesFolder(input.baseDir, options.homeDir, 'Repositories folder');
   const commandCenterUrl = input.commandCenterUrl ? requireBackend(input.commandCenterUrl) : '';
   const file = location(options); await fs.mkdir(path.dirname(file), { recursive: true });
   let lock;
@@ -35,7 +35,7 @@ export async function writeWorkspacePreferences(input: { backend: string; baseDi
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
     const config = await read(file);
-    await fs.writeFile(temporary, JSON.stringify({ ...config, backend_url: backend, mainsequence_path: path.resolve(input.baseDir), command_center_url: commandCenterUrl }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    await fs.writeFile(temporary, JSON.stringify({ ...config, backend_url: backend, mainsequence_path: baseDir, command_center_url: commandCenterUrl }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     await fs.rename(temporary, file);
     return readDesktopPreferences(options);
   } finally { await fs.rm(temporary, { force: true }); await lock.close(); await fs.unlink(file + '.preferences.lock'); }
