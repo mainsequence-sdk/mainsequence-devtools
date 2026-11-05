@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { ActionCapability, HostServices, ProcessSpec, ProjectAction, ProjectContext, SessionService, ToolingError } from './models';
-import { canonicalRepositoryDir, git, projectContext, readProjectEnv, repositorySetupInfo } from './repositories';
+import { canonicalRepositoryDir, git, projectContext, readProjectEnv, repositoriesFolder, repositorySetupInfo } from './repositories';
 import { hasProjectCredentials, writeMachineEnv } from './envfile';
 import { repositorySshKeyIdentity, repositorySshKeyPaths, repositorySshKeyName } from './repositoryIdentity';
 import { resolveCodeRepositoryCli, buildCodeRepositoryCliInvocations } from './cli';
@@ -205,7 +205,8 @@ function quoteSshPath(value: string): string {
   }
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
-export async function setupRepository(host: HostServices, session: SessionService, input: { backend: string; repositoryUid: string; branch: string; baseDir: string; install?: boolean }, options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState; destination?: string; reference?: string }): Promise<unknown> {
+export async function setupRepository(host: HostServices, session: SessionService, request: { backend: string; repositoryUid: string; branch: string; baseDir: string; install?: boolean }, options: { env: NodeJS.ProcessEnv; signal?: AbortSignal; state: ExecutionState; destination?: string; reference?: string }): Promise<unknown> {
+  const input = { ...request, baseDir: repositoriesFolder(request.baseDir) };
   const { repository, binding, orgSlug } = await repositorySetupInfo(session, input.backend, input.repositoryUid, input.branch);
   const type = repository.code_repository_type;
   if (type !== 'python' && type !== 'vite_react') throw new ToolingError('UNSUPPORTED_ACTION', 'This CodeRepository type is not supported.');

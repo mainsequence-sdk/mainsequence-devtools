@@ -42,7 +42,7 @@ export async function readWorkspacePreferences(options: { env?: NodeJS.ProcessEn
     .then(text => JSON.parse(text)).catch(() => ({}));
   const folder = config?.mainsequence_path;
   return { backend: requireBackend(env.MAINSEQUENCE_ENDPOINT || (typeof config?.backend_url === 'string' && config.backend_url.trim()) || 'https://api.main-sequence.app'),
-    baseDir: typeof folder === 'string' && path.isAbsolute(folder) && !/[\0\r\n]/.test(folder) ? folder : path.join(home, 'mainsequence') };
+    baseDir: typeof folder === 'string' && folder.trim() && !/[\0\r\n]/.test(folder) ? repositoriesFolder(folder, home) : path.join(home, 'mainsequence') };
 }
 
 export async function git(host: HostServices, cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
@@ -117,6 +117,17 @@ export async function repositorySetupInfo(session: SessionService, backend: stri
   const organization = user?.organization || profile?.organization || {};
   const orgName = typeof organization === 'string' ? organization : organization.name || organization.slug || organization.uid || 'default';
   return { repository, branch, binding, orgSlug: safeSlug(orgName) };
+}
+/** The repositories folder as the MainSequence CLI reads it (`normalize_mainsequence_path`), so every
+ * tool shares one tree: `~` is the home folder, a bare name such as `mainsequence-dev` is a folder in it,
+ * and any other path is an ordinary one. A bare name is never resolved against the working directory,
+ * which for a Claude, Codex or VS Code host is whatever folder its session has open. */
+export function repositoriesFolder(value: unknown, home: string = os.homedir(), label = 'Repositories base folder'): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw || /[\0\r\n]/.test(raw)) throw new ToolingError('INVALID_REQUEST', `${label} is required.`);
+  if (raw === '~' || raw.startsWith('~/')) return path.resolve(home, raw.slice(2));
+  if (path.isAbsolute(raw) || raw.startsWith('.') || raw.includes('/') || raw.includes('\\')) return path.resolve(raw);
+  return path.resolve(home, raw);
 }
 export function safeSlug(value: string): string {
   return String(value || 'code-repository').toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64) || 'code-repository';

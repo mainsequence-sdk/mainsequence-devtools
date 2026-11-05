@@ -3,8 +3,15 @@
 `readWorkspacePreferences({ env?, configPath?, homeDir? })` resolves only the backend
 URL and repositories folder. It never signs in or rewrites configuration. The
 backend uses `MAINSEQUENCE_ENDPOINT`, then existing `backend_url`, then
-`https://api.main-sequence.app`. The folder uses an absolute `mainsequence_path`,
-otherwise `<home>/mainsequence`. Host-saved overrides remain the host's responsibility.
+`https://api.main-sequence.app`. The folder uses `mainsequence_path`, otherwise
+`<home>/mainsequence`. Host-saved overrides remain the host's responsibility.
+
+Every action reads a repositories folder as the MainSequence CLI does
+(`repositoriesFolder(value, home?)`): `~` is the home folder, a bare name such as
+`mainsequence-dev` is a folder in it, and any other path is an ordinary one. A bare name is
+never resolved against the working directory, which for a Claude, Codex or VS Code host is
+whatever folder its session has open. Setup, local listings, Projects setup and saved
+settings therefore all use one tree, `<base>/<organization>/projects/`, as the CLI does.
 
 The structured `createDevTools().dispatch` API accepts `mcp-environments` to read
 all authorized organization environments through the existing paginated backend
