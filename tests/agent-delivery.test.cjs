@@ -80,6 +80,22 @@ test('a process killed after send leaves an uncertain record; restarting cannot 
  const recovered=await f.service().deliver(scope,r.requestId);assert.equal(recovered.state,'uncertain');assert.equal(recovered.sendAttempts,1);assert.equal(f.sends().length,0);
  assert.equal(await fs.readFile(sentFile,'utf8'),r.requestId+'\n');
 });
+test('a process killed while taking the storage lock never blocks the next one',async t=>{
+ const f=await fixture(t),r=await f.api.stage(scope,f.draft());
+ const store=path.join(f.directory,(await fs.readdir(f.directory)).find(n=>n.endsWith('.json'))),lock=store+'.lock';
+ const exited=spawn(process.execPath,['-e','']);const dead=exited.pid;await new Promise(resolve=>exited.once('exit',resolve));
+ // Killed between linking its lock and removing its private file: the lock still has that second name.
+ const token=randomUUID(),pending=`${lock}.${token}.tmp`;
+ await fs.writeFile(pending,JSON.stringify({pid:dead,token}),{mode:0o600});await fs.link(pending,lock);
+ assert.equal((await f.api.get(scope,r.requestId)).state,'pending');
+ await assert.rejects(fs.stat(lock),{code:'ENOENT'});await assert.rejects(fs.stat(pending),{code:'ENOENT'});
+ // An older version's empty lock: left alone while new, since its owner may still be writing; removed once stale.
+ await fs.writeFile(lock,'',{mode:0o600});
+ await assert.rejects(f.api.get(scope,r.requestId),{code:'STORE_ERROR'});
+ const old=new Date(Date.now()-60_000);await fs.utimes(lock,old,old);
+ assert.equal((await f.api.get(scope,r.requestId)).state,'pending');
+ await assert.rejects(fs.stat(lock),{code:'ENOENT'});assert.equal(f.sends().length,0);
+});
 test('corrupt and symlinked storage fail closed rather than discarding deduplication history',async t=>{
  const f=await fixture(t),r=await f.api.stage(scope,f.draft()),file=(await fs.readdir(f.directory)).find(n=>n.endsWith('.json')),p=path.join(f.directory,file);
  await fs.writeFile(p,'broken');await assert.rejects(f.api.deliver(scope,r.requestId));assert.equal(await fs.readFile(p,'utf8'),'broken');
