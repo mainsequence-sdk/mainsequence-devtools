@@ -31,7 +31,7 @@ const fetchImpl = async (url, options) => {
   let result;
   if(endpoint === '/api/v1/code-repositories/repo-1/') result = {uid:'repo-1',code_repository_name:'Shared',code_repository_type:'python',primary_language:'python',framework:'none',github_repository_binding_uid:'binding-1',branches:[{uid:'branch-1',repository_branch:'main'}]};
   else if(endpoint === '/api/v1/code-repository-branches/branch-1/') result = {uid:'branch-1',code_repository_uid:'repo-1',code_repository_name:'Shared',repository_branch:'main',github_repository_binding_uid:'binding-1',is_initialized:true};
-  else if(endpoint === '/api/v1/github-repository-bindings/binding-1/') result = {uid:'binding-1',code_repository_uid:'repo-1',code_repository_name:'Shared',repo_name:'Shared',github_full_name:'Example/Shared',git_ssh_url:'git@github.com:Example/Shared.git'};
+  else if(endpoint === '/api/v1/github-repository-bindings/binding-1/') result = {uid:'binding-1',code_repository_uid:'repo-1',code_repository_name:'Shared',repo_name:'Shared',github_full_name:'',git_ssh_url:'git@github.com:Example/Shared.git'}; // the backend leaves the name empty for some bindings
   else if(endpoint === '/api/v1/users/me/') result = {username:'fixture',organization:{name:'Fixture Org'}};
   else if(endpoint === '/api/v1/code-repositories/repo-1/add-deploy-key/') {
     const key = JSON.parse(options.body); if(!key.public_key.startsWith('ssh-ed25519 ')) throw Error('invalid fixture key'); result={};
