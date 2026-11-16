@@ -29,7 +29,8 @@ export type GitHubRepositoryBinding = {
   code_repository_uid: string;
   code_repository_name: string;
   repo_name: string;
-  github_full_name: string;
+  /** The backend leaves it empty for some bindings; setup clones from `git_ssh_url` and never reads it. */
+  github_full_name: string | null;
   git_ssh_url?: string | null;
   git_repo_url?: string | null;
 };
@@ -53,6 +54,14 @@ function requiredObject(value: unknown, label: string): Record<string, any> {
     throw new ApiError(`${label} must be an object.`);
   }
   return value as Record<string, any>;
+}
+
+/** A label nothing depends on: missing or empty is null, never a reason to refuse the record. */
+function optionalLabel(value: unknown, label: string): string | null {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized) return null;
+  if (/[\r\n]/.test(normalized)) throw new ApiError(`${label} must be a single line.`);
+  return normalized;
 }
 
 function optionalSingleLine(value: unknown, label: string): string | null | undefined {
@@ -111,7 +120,7 @@ export function gitHubRepositoryBindingFromResponse(value: unknown, label: strin
     code_repository_uid: requiredSingleLine(payload.code_repository_uid, `${label} CodeRepository UID`),
     code_repository_name: requiredSingleLine(payload.code_repository_name, `${label} CodeRepository name`),
     repo_name: requiredSingleLine(payload.repo_name, `${label} repository name`),
-    github_full_name: requiredSingleLine(payload.github_full_name, `${label} GitHub full name`),
+    github_full_name: optionalLabel(payload.github_full_name, `${label} GitHub full name`),
     git_ssh_url: optionalSingleLine(payload.git_ssh_url, `${label} SSH URL`),
     git_repo_url: optionalSingleLine(payload.git_repo_url, `${label} Git URL`)
   };
