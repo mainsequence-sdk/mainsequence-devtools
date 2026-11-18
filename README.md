@@ -279,6 +279,8 @@ blocks to Messages API blocks and spawns one worker per action.
   repositories-folder resolution and environment-scoped MCP actions.
 - [Shared desktop transport](docs/shared-desktop-transport.md): the per-user worker that
   hosts with one process per chat use to share HTTP connections, reads and token renewal.
+- [Deployments and releases](docs/deployments.md): deployment runs, release history and
+  stats, the active-run check, waiting for a run, and the polling rules hosts follow.
 
 Decisions are recorded in [ADR 0001](docs/adr/0001-shared-developer-tooling-and-codex.md)
 (shared tooling), [ADR 0002](docs/adr/0002-conversational-project-mcp-client.md) (the MCP
