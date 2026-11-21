@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { HostServices, SessionService, ToolingError } from './models';
 import { OrganizationProjectClient, projectUid } from './organizationProjects';
 import { canonicalRepositoryDir, projectContext, repositoriesFolder, repositorySetupInfo, safeSlug } from './repositories';
@@ -86,6 +86,44 @@ async function namedDirectory(parent: string, name: string, uid: string): Promis
   return path.join(parent, names[0] || `${safeSlug(name)}-${uid}`);
 }
 
+/**
+ * Earlier versions kept each project one level deeper, in a folder named after a hash of the backend address:
+ * `organization-projects/<16 hex>/<project>-<uid>`. The UID in the name already keeps projects of different
+ * backends apart, so this moves the project's container up beside the others and rewrites the paths its
+ * manifests record. Its checkouts are standalone clones (`--dissociate`), so moving them keeps Git intact.
+ * The emptied hash folder is removed; anything else in it stays.
+ */
+async function adoptHashedContainer(projectsRoot: string, container: string, uid: string, backend: string, state: ExecutionState, progress?: (message: string) => void) {
+  if (await exists(container) || !await exists(projectsRoot)) return;
+  const found: string[] = [];
+  for (const entry of await fs.readdir(projectsRoot)) {
+    if (!/^[0-9a-f]{16}$/.test(entry)) continue;
+    const parent = path.join(projectsRoot, entry), stat = await fs.lstat(parent);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+    for (const name of await fs.readdir(parent)) if (name === uid || name.endsWith(`-${uid}`)) found.push(path.join(parent, name));
+  }
+  if (!found.length) return;
+  if (found.length > 1) throw new ToolingError('INVALID_REQUEST', `Multiple workspace folders match ${uid}. Resolve the duplicate folders first.`);
+  const from = found[0];
+  await ordinaryDirectory(from);
+  const manifestPath = path.join(from, '.mainsequence-project.json');
+  if (!await exists(manifestPath)) throw new ToolingError('INVALID_REQUEST', `${from} has no project manifest. Move or remove it before setting up this project.`);
+  const manifest = await readManifest(manifestPath);
+  if (manifest.backend !== backend || manifest.projectUid !== uid) throw new ToolingError('INVALID_REQUEST', 'This workspace belongs to another project or backend.');
+  const moved = (value: unknown) => typeof value === 'string' && (value === from || value.startsWith(from + path.sep)) ? path.join(container, path.relative(from, value)) : value;
+  const updated = { ...manifest, ...(typeof manifest.root === 'string' ? { root: moved(manifest.root) } : {}),
+    ...(Array.isArray(manifest.repositories) ? { repositories: manifest.repositories.map((row: any) => ({ ...row, path: moved(row?.path) })) } : {}) };
+  progress?.(`Moving the project workspace to ${container}.`);
+  state.mutationStarted = true;
+  await fs.rename(from, container);
+  await atomicJson(path.join(container, '.mainsequence-project.json'), updated);
+  if (typeof updated.root === 'string' && await exists(path.join(updated.root, '.mainsequence-project.json'))) {
+    const rootManifest = await readManifest(path.join(updated.root, '.mainsequence-project.json'));
+    if (JSON.stringify(rootManifest) === JSON.stringify(manifest)) await atomicJson(path.join(updated.root, '.mainsequence-project.json'), updated);
+  }
+  await fs.rmdir(path.dirname(from)).catch(() => {});
+}
+
 /** Stable, independent branch checkouts. No reset, stash, force checkout, deletion or automatic pull. */
 export async function setupOrganizationProject(input: Input, options: Options): Promise<OrganizationProjectWorkspace> {
   const { session, signal, state } = options;
@@ -117,7 +155,9 @@ export async function setupOrganizationProject(input: Input, options: Options): 
   // The UID identifies the storage container, never the folder opened/displayed by Claude.
   // Repositories are siblings of the named workspace: /add-dir must register each one,
   // instead of treating nested checkouts as already covered by the working directory.
-  const container = await namedDirectory(path.join(base, org, 'organization-projects', createHash('sha256').update(backend).digest('hex').slice(0, 16)), project.name, uid);
+  const projectsRoot = path.join(base, org, 'organization-projects');
+  const container = await namedDirectory(projectsRoot, project.name, uid);
+  await adoptHashedContainer(projectsRoot, container, uid, backend, state, host.progress);
   const root = path.join(container, displayName);
   const manifestPath = path.join(container, '.mainsequence-project.json');
   await ordinaryDirectory(container);

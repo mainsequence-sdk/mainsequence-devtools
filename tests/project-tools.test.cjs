@@ -363,10 +363,12 @@ async function projectFixture(t) {
 
 test('mcp-catalog answers from the shared file at once, re-reads the saved connections on request and scopes by environment', async t => {
   const f = await projectFixture(t);
-  const cached = await f.create().dispatch({ action: 'mcp-catalog', backend });
+  // Not a timeout test: a generous budget keeps a loaded machine (parallel test files) from starving the local MCP.
+  const create = () => f.create({ projectRequestTimeoutMs: 5000 });
+  const cached = await create().dispatch({ action: 'mcp-catalog', backend });
   assert.equal(cached.status, 'success', cached.summary); assert.equal(cached.data.count, 0); assert.equal(cached.data.refreshed, false); assert.equal(cached.data.file, f.catalogFile);
   assert.match(cached.summary, /from the shared catalog/);
-  const refreshed = await f.create().dispatch({ action: 'mcp-catalog', backend, environmentUid, refresh: 'force' });
+  const refreshed = await create().dispatch({ action: 'mcp-catalog', backend, environmentUid, refresh: 'force' });
   assert.equal(refreshed.status, 'success', refreshed.summary); assert.equal(refreshed.data.refreshed, true); assert.equal(refreshed.data.count, 1);
   assert.match(refreshed.summary, /1 project MCP tools from 1 saved connections, catalogs re-read\./);
   const name = projectToolName(backend, environmentUid, releaseUid, 'set_value');
@@ -375,20 +377,20 @@ test('mcp-catalog answers from the shared file at once, re-reads the saved conne
   assert.deepEqual(refreshed.data.connections, [{ backend, releaseUid, environmentUid, environmentName: 'Research', name: 'metatable-mcp', tools: 1 }]);
   assert.equal(refreshed.data.environmentUid, environmentUid); assert.deepEqual(refreshed.data.unavailable, []); assert.equal(refreshed.data.error, null);
   assert.doesNotMatch(await fs.readFile(f.catalogFile, 'utf8'), /fixture-release-token|resource_metadata_url/);
-  const again = await f.create().dispatch({ action: 'mcp-catalog', backend });
+  const again = await create().dispatch({ action: 'mcp-catalog', backend });
   assert.equal(again.data.count, 1, 'the next process registers from the file without a network request'); assert.equal(again.data.refreshed, false);
-  assert.equal((await f.create().dispatch({ action: 'mcp-catalog', backend, environmentUid: '10000000-0000-4000-8000-000000000009' })).data.count, 0, 'another environment sees none of them');
-  assert.equal((await f.create().dispatch({ action: 'mcp-catalog', backend, refresh: true })).data.refreshed, false, 'a fresh cache is not re-read without force');
-  assert.equal((await f.create().dispatch({ action: 'mcp-catalog', backend, environmentUid: 'research' })).error.code, 'INVALID_REQUEST');
-  assert.equal((await f.create().dispatch({ action: 'mcp-catalog', backend, refresh: 'yes' })).error.code, 'INVALID_REQUEST');
+  assert.equal((await create().dispatch({ action: 'mcp-catalog', backend, environmentUid: '10000000-0000-4000-8000-000000000009' })).data.count, 0, 'another environment sees none of them');
+  assert.equal((await create().dispatch({ action: 'mcp-catalog', backend, refresh: true })).data.refreshed, false, 'a fresh cache is not re-read without force');
+  assert.equal((await create().dispatch({ action: 'mcp-catalog', backend, environmentUid: 'research' })).error.code, 'INVALID_REQUEST');
+  assert.equal((await create().dispatch({ action: 'mcp-catalog', backend, refresh: 'yes' })).error.code, 'INVALID_REQUEST');
   // A failed re-read reports why and still returns what the file holds.
   f.state.endpoint = 'https://127.0.0.1:1'; await f.save();
-  const degraded = await f.create().dispatch({ action: 'mcp-catalog', backend, refresh: 'force' });
+  const degraded = await create().dispatch({ action: 'mcp-catalog', backend, refresh: 'force' });
   assert.equal(degraded.status, 'success', degraded.summary); assert.deepEqual(degraded.data.unavailable, ['metatable-mcp']); assert.equal(degraded.data.retained, 1); assert.equal(degraded.data.count, 1);
   assert.match(degraded.summary, /metatable-mcp could not be read now; earlier tools stay registered/);
   assert.equal(degraded.data.connections[0].unavailable.code, 'BACKEND_UNREACHABLE');
   // The next process (a Claude Desktop worker is one per action) sees the mark from the file, with no refresh of its own.
-  const seen = await f.create().dispatch({ action: 'mcp-catalog', backend });
+  const seen = await create().dispatch({ action: 'mcp-catalog', backend });
   assert.equal(seen.data.refreshed, false); assert.deepEqual(seen.data.unavailable, ['metatable-mcp']); assert.match(seen.summary, /could not be read now/);
 });
 
