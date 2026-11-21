@@ -13,7 +13,7 @@ function run(n, release, state, { minutes = 4, error, type = 'resource_release',
     pipeline: { current_step_key: state === 'running' ? 'deploy' : '', steps: steps || [step(1, 'Build', 'succeeded', 3, -n * 60), step(2, 'Deploy', state === 'succeeded' ? 'succeeded' : state === 'running' ? 'running' : 'failed', minutes, -n * 60)] },
     ...(error ? { error } : {}), billing: { secret: 'never-return' }, cost_summary: { total: 99 } };
 }
-function fixture({ runs, waitStates } = {}) {
+function fixture({ runs, waitStates, batchLimit, siteDeployed = false, branchStatus = 200 } = {}) {
   const calls = [], state = { username: 'fixture' };
   const allRuns = runs || [run(0, API, 'running'), run(1, API, 'succeeded'), run(2, API, 'failed', { error: { code: 'runtime_readiness_timeout', detail: 'not ready' } }),
     run(3, AGENT, 'failed', { type: 'harness_agent', error: { code: 'image_build_failed' } }), run(4, AGENT, 'superseded', { type: 'harness_agent' }), run(5, SITE, 'succeeded', { type: 'static_site' })];
@@ -24,7 +24,10 @@ function fixture({ runs, waitStates } = {}) {
     if (u.pathname === '/api/v1/resource-releases/') return Response.json({ count: 3, results: [
       { uid: API, name: 'pricing-api', release_kind: 'fastapi', code_repository_branch_uid: BRANCH, active_revision: id(20), desired_revision: id(21), workload_user_uid: 'w' },
       { uid: AGENT, name: 'risk-agent', release_kind: 'harness_agent', code_repository_branch_uid: BRANCH },
-      { uid: SITE, name: 'docs-site', release_kind: 'static_site', code_repository_branch_uid: BRANCH }] });
+      { uid: SITE, name: 'docs-site', release_kind: 'static_site', code_repository_branch_uid: BRANCH, ...(siteDeployed ? { active_revision: id(22) } : {}) }] });
+    if (u.pathname === '/api/v1/code-repository-branches/') return branchStatus === 200
+      ? Response.json({ count: 1, results: [{ uid: BRANCH, code_repository_name: 'pricing-engine', repository_branch: 'main' }].filter(row => u.searchParams.get('uid__in').split(',').includes(row.uid)) })
+      : Response.json({ detail: 'forbidden' }, { status: branchStatus });
     if (u.pathname === `/api/v1/resource-releases/${API}/`) return Response.json({ uid: API, name: 'pricing-api', release_kind: 'fastapi', code_repository_branch_uid: BRANCH, active_revision: id(20), desired_revision: id(21) });
     if (u.pathname === `/api/v1/resource-releases/${API}/revisions/`) return Response.json({ count: 2, results: [
       { uid: id(21), state: 'pending', commit_sha: 'abc0def0123456', configuration_revision: 15, created_at: iso(0) },
@@ -34,7 +37,11 @@ function fixture({ runs, waitStates } = {}) {
       if (u.searchParams.get('target_uid__in')) rows = rows.filter(row => u.searchParams.get('target_uid__in').split(',').includes(row.target_uid));
       if (u.searchParams.get('target_uid')) rows = rows.filter(row => row.target_uid === u.searchParams.get('target_uid'));
       if (u.searchParams.get('state__in')) rows = rows.filter(row => u.searchParams.get('state__in').split(',').includes(row.state));
-      return Response.json({ count: rows.length, results: rows });
+      if (u.searchParams.get('state')) rows = rows.filter(row => row.state === u.searchParams.get('state'));
+      if (u.searchParams.get('created_after')) rows = rows.filter(row => row.created_at >= u.searchParams.get('created_after'));
+      const count = rows.length, multiple = (u.searchParams.get('target_uid__in') || '').includes(',');
+      if (batchLimit && multiple && u.searchParams.get('state')) rows = rows.slice(0, batchLimit);
+      return Response.json({ count, results: rows });
     }
     if (u.pathname === `/api/v1/deployment-runs/${id(100)}/`) {
       const states = waitStates || ['running']; const now = states[Math.min(reads.wait++, states.length - 1)];
@@ -49,7 +56,8 @@ test('the release list reads one page of releases and their runs in one more req
   const f = fixture(), result = await f.run('deployment-releases', { environmentUid: ENV, days: 30 });
   assert.equal(result.status, 'success', result.summary);
   const reads = f.calls.filter(call => call.path !== '/api/v1/users/me/');
-  assert.deepEqual(reads.map(call => call.path), ['/api/v1/resource-releases/', '/api/v1/deployment-runs/']);
+  assert.deepEqual(reads.map(call => call.path), ['/api/v1/resource-releases/', '/api/v1/deployment-runs/', '/api/v1/deployment-runs/']);
+  assert.deepEqual([reads[2].query.target_uid__in, reads[2].query.state, reads[2].query.created_after], [AGENT, 'succeeded', undefined], 'only the release without a successful run in the window is looked up further back');
   assert.ok(f.calls.every(call => call.method === 'GET'));
   assert.equal(reads[0].query.organization_environment_uid, ENV);
   assert.deepEqual(reads[1].query.target_uid__in.split(','), [API, AGENT, SITE]);
@@ -141,4 +149,31 @@ test('a wait stops when its read is cancelled', async () => {
   setTimeout(() => controller.abort(), 300);
   const started = Date.now(), result = await api.dispatch({ action: 'deployment-wait', backend, expectedAccount: 'fixture', runUid: id(100), timeoutSeconds: 60 });
   assert.equal(result.status, 'cancelled'); assert.ok(Date.now() - started < 3000);
+});
+
+test('a release with no run in the window still says it is deployed, when, and from which repository and branch', async () => {
+  const f = fixture(), result = await f.run('deployment-releases', { environmentUid: ENV, days: 1 });
+  assert.equal(result.status, 'success', result.summary);
+  const reads = f.calls.filter(call => call.path !== '/api/v1/users/me/');
+  assert.deepEqual(reads.map(call => call.path), ['/api/v1/resource-releases/', '/api/v1/deployment-runs/', '/api/v1/deployment-runs/', '/api/v1/code-repository-branches/'], 'at most two more requests');
+  assert.ok(reads[1].query.created_after, 'the window read is bounded'); assert.equal(reads[2].query.state, 'succeeded'); assert.equal(reads[2].query.created_after, undefined);
+  assert.deepEqual(reads[2].query.target_uid__in.split(','), [API, AGENT, SITE]); assert.equal(reads[3].query.uid__in, BRANCH);
+  const [api, agent, site] = result.data.results;
+  assert.deepEqual(api.recent, [], 'nothing ran in the last day'); assert.equal(api.lastRun, null);
+  assert.equal(api.deployed, true); assert.equal(api.lastDeploy.uid, id(101)); assert.equal(api.lastDeploy.finishedAt, iso(-60 + 4));
+  assert.deepEqual([api.repositoryName, api.branchName], ['pricing-engine', 'main']);
+  assert.equal(agent.deployed, false, 'no active revision'); assert.equal(agent.lastDeploy, null);
+  assert.deepEqual([agent.repositoryName, agent.branchName], ['pricing-engine', 'main'], 'named from its branch when it never deployed');
+  assert.equal(site.lastDeploy.uid, id(105));
+});
+
+test('a deployed release the batched lookup leaves out is read on its own; a branch it may not read leaves the name blank', async () => {
+  const f = fixture({ batchLimit: 1, siteDeployed: true, branchStatus: 403 }), result = await f.run('deployment-releases', { environmentUid: ENV, days: 1 });
+  assert.equal(result.status, 'success', result.summary);
+  const lookups = f.calls.filter(call => call.path === '/api/v1/deployment-runs/' && call.query.state === 'succeeded');
+  assert.equal(lookups.length, 2); assert.equal(lookups[1].query.target_uid__in, SITE); assert.equal(lookups[1].query.limit, '1');
+  const [api, agent, site] = result.data.results;
+  assert.equal(api.lastDeploy.uid, id(101)); assert.equal(site.lastDeploy.uid, id(105), 'found by its own read');
+  assert.equal(agent.lastDeploy, null, 'a release never deployed is not read on its own');
+  assert.deepEqual([agent.repositoryName, agent.branchName], ['', ''], 'a refused branch read does not fail the list');
 });
