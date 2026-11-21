@@ -172,3 +172,38 @@ test('workspace membership cannot point outside its managed repository container
   for(const folder of [root,path.dirname(root)])await fs.writeFile(path.join(folder,'.mainsequence-project.json'),JSON.stringify(manifest));
   await assert.rejects(readOrganizationProjectWorkspace(root),/membership/);
 });
+test('a project lives in <org>/organization-projects/<project>-<uid>, beside the others, with no backend folder', async t => {
+  const f = await fixture(t, true), first = await f.tooling.dispatch(f.input); assert.equal(first.status, 'success', JSON.stringify(first));
+  const container = path.dirname(first.data.root), parts = path.relative(f.baseDir, container).split(path.sep);
+  assert.equal(parts.length, 3, container); assert.equal(parts[1], 'organization-projects'); assert.equal(parts[2], `ontology-${uid(1)}`);
+  for (const repo of first.data.repositories) assert.ok(repo.path.startsWith(path.join(container, 'repositories') + path.sep), repo.path);
+  for (const repo of first.data.repositories) assert.equal(path.relative(f.baseDir, repo.sourcePath).split(path.sep)[1], 'projects', 'the repositories themselves stay in projects/');
+});
+test('a workspace in an older backend-hash folder moves up once, keeping its checkouts, edits and instructions', async t => {
+  const f = await fixture(t, true), first = await f.tooling.dispatch(f.input); assert.equal(first.status, 'success', JSON.stringify(first));
+  const w = first.data, container = path.dirname(w.root), projectsRoot = path.dirname(container);
+  // Recreate the older layout: the same container one level deeper, its manifests recording those paths.
+  const hashed = path.join(projectsRoot, '0123456789abcdef'), old = path.join(hashed, path.basename(container));
+  await fs.mkdir(hashed); await fs.rename(container, old);
+  const rewrite = value => value.split(container).join(old);
+  for (const file of [path.join(old, '.mainsequence-project.json'), path.join(old, 'Ontology', '.mainsequence-project.json')]) await fs.writeFile(file, rewrite(await fs.readFile(file, 'utf8')));
+  await fs.writeFile(path.join(old, 'Ontology', 'AGENTS.md'), 'Keep my instructions');
+  await fs.writeFile(path.join(old, 'repositories', path.relative(path.join(container, 'repositories'), w.repositories[0].path), 'notes.txt'), 'keep my edit');
+  const clones = f.calls.filter(c => c.args[0] === 'clone').length, progress = [];
+  const tool = createDevTools({ host: { ...f.host, progress: message => progress.push(message) }, session: f.auth, env: { ...process.env }, store: null });
+  const again = await tool.dispatch(f.input); assert.equal(again.status, 'success', JSON.stringify(again));
+  assert.equal(again.data.root, w.root); assert.deepEqual(again.data.repositories.map(r => r.path), w.repositories.map(r => r.path));
+  assert.equal(f.calls.filter(c => c.args[0] === 'clone').length, clones, 'nothing is cloned again');
+  assert.ok(progress.includes(`Moving the project workspace to ${container}.`));
+  await assert.rejects(fs.lstat(hashed), { code: 'ENOENT' }, 'the emptied backend folder is removed');
+  assert.equal(await fs.readFile(path.join(w.root, 'AGENTS.md'), 'utf8'), 'Keep my instructions');
+  assert.equal(await fs.readFile(path.join(w.repositories[0].path, 'notes.txt'), 'utf8'), 'keep my edit');
+  for (const repo of again.data.repositories) assert.equal(f.git(repo.path, ['branch', '--show-current']), repo.branch);
+  const read = await readOrganizationProjectWorkspace(w.root); assert.deepEqual(read.repositories.map(r => r.path), w.repositories.map(r => r.path));
+  assert.doesNotMatch(await fs.readFile(path.join(container, '.mainsequence-project.json'), 'utf8'), /0123456789abcdef/);
+  // A second hashed copy of the same project is never guessed between.
+  await fs.mkdir(path.join(projectsRoot, 'fedcba9876543210', path.basename(container)), { recursive: true });
+  await fs.mkdir(path.join(projectsRoot, '0123456789abcdef', path.basename(container)), { recursive: true });
+  await fs.rename(container, container + '-moved-away');
+  assert.match((await f.tooling.dispatch(f.input)).summary, /Multiple workspace folders match/);
+});

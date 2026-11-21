@@ -34,10 +34,12 @@ an absolute `baseDir`. After preflight it:
 1. Prepares missing repositories in the existing
    `<base>/<organization>/projects/<repository-name>-<uid>` layout. Existing source
    checkouts keep their branch and edits.
-2. Creates or reuses a UID-scoped storage container below
-   `<base>/<organization>/organization-projects/<backend-hash>/`. The folder opened
-   in Claude is a child named exactly after the project, including case and spaces:
-   `Ontology`, never `ontology-<uid>`. Identity remains in the parent and manifests.
+2. Creates or reuses the project's container,
+   `<base>/<organization>/organization-projects/<project-name>-<uid>`, beside the
+   organization's other projects. The UID keeps projects of different backends apart.
+   The folder opened in Claude or Codex is a child named exactly after the project,
+   including case and spaces: `Ontology`, never `ontology-<uid>`. Identity remains in
+   the container and manifests.
 3. Prepares independent branch checkouts beneath the container's `repositories/`,
    alongside the named workspace. Cloning uses
    `--reference-if-able --dissociate` to reuse local objects without sharing mutable
@@ -58,6 +60,22 @@ becomes `ready`. This means the checkouts are prepared, not that a Claude sessio
 has attached them. Existing schema 1 containers reuse their repository paths and
 copy their instructions into the named child without moving or recloning repos.
 Project renames rename the child workspace while retaining checkout paths.
+Earlier versions put each container one level deeper, in a folder named after a hash
+of the backend address (`organization-projects/<16 hex>/<project>-<uid>`). The next
+setup of such a project moves its container up, rewrites the paths its manifests
+record and removes the emptied hash folder. The checkouts are standalone clones, so Git
+is unaffected, but a chat or terminal open in the old folder must reopen the new one.
+Two hashed copies of one project are refused rather than guessed between.
+
+The resulting layout of a repositories folder:
+
+```
+<base>/<organization>/
+  projects/<repository>-<uid>/                    one checkout per repository
+  organization-projects/<project>-<uid>/          one container per project set up locally
+    <Project Name>/                                the folder opened: AGENTS.md or CLAUDE.md
+    repositories/<repository>-<uid>/<branch>-<uid>/  the project's branch checkouts
+```
 
 The result includes a local root and `claude://code/new?folder=...` link. Claude's
 host adapter uses `readOrganizationProjectWorkspace` to validate both manifests
