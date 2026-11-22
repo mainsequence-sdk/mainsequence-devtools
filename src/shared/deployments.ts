@@ -8,28 +8,27 @@ export type DeploymentRequest =
   { action: 'deployment-history'; backend: string; expectedAccount: string; environmentUid: string; codeRepositoryBranchUid?: string; limit?: number; offset?: number }
   | { action: 'deployment-run'; backend: string; expectedAccount: string; runUid: string; kind?: 'deployment_run' | 'workflow_run' }
   | { action: 'deployment-logs'; backend: string; expectedAccount: string; runUid: string; stepUid?: string; cursor?: string; limit?: number }
-  | { action: 'deployment-releases'; backend: string; expectedAccount: string; environmentUid: string; codeRepositoryBranchUid?: string; releaseKind?: string; search?: string; days?: number; limit?: number; offset?: number }
-  | { action: 'deployment-release'; backend: string; expectedAccount: string; environmentUid: string; releaseUid: string; days?: number; limit?: number }
+  | { action: 'deployment-release-history'; backend: string; expectedAccount: string; environmentUid: string; codeRepositoryBranchUid?: string; releaseUid?: string; releaseKind?: string; search?: string; days?: number; limit?: number; offset?: number }
   | { action: 'deployment-active'; backend: string; expectedAccount: string; environmentUid: string; codeRepositoryBranchUid?: string }
   | { action: 'deployment-wait'; backend: string; expectedAccount: string; runUid: string; timeoutSeconds?: number };
-export const DEPLOYMENT_ACTIONS = new Set(['deployment-history', 'deployment-run', 'deployment-logs', 'deployment-releases', 'deployment-release', 'deployment-active', 'deployment-wait']);
-/** Release kinds as the backend names them, with the words the pane shows. */
-export const RELEASE_KINDS: Record<string, string> = { fastapi: 'API', harness_agent: 'Agent', agent: 'Agent', static_site: 'Static site' };
+export const DEPLOYMENT_ACTIONS = new Set(['deployment-history', 'deployment-run', 'deployment-logs', 'deployment-release-history', 'deployment-active', 'deployment-wait']);
+/** Release kinds as the backend names them, with the words to show when it sends no label. */
+export const RELEASE_KINDS: Record<string, string> = { fastapi: 'API', harness_agent: 'Agent', static_site: 'Static site' };
 /** A run in any other state has ended and never changes again. */
 export const ACTIVE_RUN_STATES = new Set(['queued', 'running']);
 /** How often a wait re-reads its run, and the longest one call waits. */
 export const WAIT_INTERVAL_MS = 10_000;
 export const WAIT_LIMIT_SECONDS = 120;
-/** The stage name release stats give the time a run waits before its first stage starts. */
-export const WAITING_STAGE = 'Waiting to start';
 /** Command Center's wording for a run that answers 404: it never says whether the record exists. */
 export const HIDDEN_DEPLOYMENT = "You can't see this deployment. A deployment is shown to the people who can see its release or Job.";
-export const HIDDEN_RELEASE = "You can't see this release. A release is shown to the people it is shared with.";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
 const ACTIVE = new Set(['pending', 'queued', 'running']);
-const RUN_PATH = /^\/api\/v1\/(?:deployment-runs\/[a-f0-9-]{36}\/(?:logs\/)?|deployment-history\/[a-f0-9-]{36}\/|resource-releases\/[a-f0-9-]{36}\/(?:revisions\/)?)$/;
-const RELEASE_TARGETS = new Set(['resource_release', 'harness_agent', 'static_site']);
+const RUN_PATH = /^\/api\/v1\/(?:deployment-runs\/[a-f0-9-]{36}\/(?:logs\/)?|deployment-history\/[a-f0-9-]{36}\/)$/;
+/** The target types whose deployments are a resource release's. A Job, its image and an image build are not. */
+export const RELEASE_TARGETS = new Set(['resource_release', 'harness_agent', 'static_site']);
+/** How far back release deployment history reads when no window is chosen. */
+export const RELEASE_HISTORY_DAYS = 1;
 
 function uuid(value: unknown, message: string): string {
   if (typeof value !== 'string' || !UUID.test(value)) throw new ToolingError('INVALID_REQUEST', message);
@@ -104,7 +103,7 @@ export function deploymentRun(row: unknown, now: number) {
   const run = rec(row);
   const uid = optionalUuid(run.uid);
   if (!uid) return null;
-  const target = rec(run.target), repository = rec(target.code_repository), branch = rec(target.code_repository_branch);
+  const target = rec(run.target), release = rec(target.resource_release), repository = rec(target.code_repository), branch = rec(target.code_repository_branch);
   const steps = list(rec(run.pipeline).steps).map(rec).filter(step => Number.isFinite(Number(step.sequence)))
     .sort((a, b) => Number(a.sequence) - Number(b.sequence)).slice(0, 60).map(step => {
       const startedAt = when(step.started_at), finishedAt = when(step.finished_at);
@@ -124,7 +123,9 @@ export function deploymentRun(row: unknown, now: number) {
     currentStepKey: text(rec(run.pipeline).current_step_key, 200), steps,
     workflowStepKeys: list(run.workflow_step_keys).slice(0, 40).map(key => text(key, 200)), workflowRun: workflow,
     logsAvailable: rec(run.logs).state === 'available' || typeof rec(run.logs).url === 'string', error: errorText(run.error), errorCode: errorCode(run.error),
-    releaseUid: optionalUuid(rec(target.resource_release).uid) ?? (RELEASE_TARGETS.has(text(run.target_type, 60)) ? optionalUuid(target.uid) ?? optionalUuid(run.target_uid) : null) };
+    releaseName: text(release.name, 200) || (RELEASE_TARGETS.has(text(run.target_type, 60)) ? text(target.name, 200) : ''), agentName: text(rec(target.agent).name, 200),
+    targetKind: text(target.kind, 60), targetKindLabel: text(target.kind_label, 100), revisionUid: optionalUuid(rec(target.revision).uid),
+    releaseUid: optionalUuid(release.uid) ?? (RELEASE_TARGETS.has(text(run.target_type, 60)) ? optionalUuid(target.uid) ?? optionalUuid(run.target_uid) : null) };
 }
 type Run = NonNullable<ReturnType<typeof deploymentRun>>;
 
@@ -132,71 +133,30 @@ function errorCode(value: unknown): string {
   const code = rec(value).code;
   return typeof code === 'string' ? text(code, 100) : '';
 }
-function percentile(sorted: number[], share: number): number | null {
-  if (!sorted.length) return null;
-  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(share * sorted.length) - 1))];
+/** One deployment of a resource release, as a history row shows it. */
+function releaseDeployment(run: Run) {
+  const active = ACTIVE_RUN_STATES.has(run.state);
+  return { uid: run.uid, releaseUid: run.releaseUid, releaseName: run.releaseName, agentName: run.agentName, kind: run.targetKind,
+    kindLabel: run.targetKindLabel || RELEASE_KINDS[run.targetKind] || run.targetKind.replace(/_/g, ' '), revisionUid: run.revisionUid, commit: run.commit,
+    repositoryName: run.repositoryName, branchUid: run.branchUid, branchName: run.branchName, state: run.state, outcome: run.outcome, source: run.source,
+    createdAt: run.createdAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: active || run.finishedAt ? run.durationMs : null,
+    error: run.error, errorCode: run.errorCode,
+    // A stage left running in a deployment that has ended was stopped, as Command Center shows it.
+    steps: run.steps.map(step => ({ name: step.name || step.key, state: !active && step.state === 'running' ? 'stopped' : step.state })) };
 }
-const numbers = (values: (number | null)[]) => values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value)).sort((a, b) => a - b);
-
-/** What a set of runs says about a release: counts by state, success rate over runs that
- *  either deployed or failed, durations of the runs that succeeded, the stage that takes
- *  longest and the failure seen most. The backend has no statistics endpoint. */
-export function releaseStats(runs: Run[]) {
-  const counts: Record<string, number> = { succeeded: 0, failed: 0, blocked: 0, cancelled: 0, superseded: 0, skipped: 0, active: 0 };
-  const stages = new Map<string, (number | null)[]>(), failures = new Map<string, number>();
-  for (const run of runs) {
-    if (ACTIVE_RUN_STATES.has(run.state)) { counts.active++; continue; }
-    if (run.state in counts) counts[run.state]++;
-    if (run.state === 'succeeded') {
-      // A run can sit for minutes before its first stage, waiting on its workflow (an image
-      // build in another run): that wait is counted as a stage of its own.
-      const first = earliest(run.steps.map(step => step.startedAt)), waited = duration(run.startedAt, first, Number.NaN);
-      if (waited !== null) stages.set(WAITING_STAGE, [...(stages.get(WAITING_STAGE) || []), waited]);
-      for (const step of run.steps) if (step.state === 'succeeded') {
-        const name = step.name || step.key || step.kind;
-        if (name) stages.set(name, [...(stages.get(name) || []), step.durationMs]);
-      }
-    }
-    if (run.state === 'failed' || run.state === 'blocked') {
-      // Blocked runs often say why only in their outcome (workflow_prerequisite_failed).
-      const code = run.errorCode || run.steps.find(step => step.errorCode)?.errorCode || run.outcome || 'unknown';
-      failures.set(code, (failures.get(code) || 0) + 1);
-    }
-  }
-  const decided = counts.succeeded + counts.failed + counts.blocked;
-  const durations = numbers(runs.filter(run => run.state === 'succeeded' && run.finishedAt).map(run => run.durationMs));
-  let slowestStage: { name: string; medianMs: number } | null = null;
-  for (const [name, values] of stages) {
-    const median = percentile(numbers(values), 0.5);
-    if (median !== null && (!slowestStage || median > slowestStage.medianMs)) slowestStage = { name, medianMs: median };
-  }
-  const [code, count] = [...failures].sort((a, b) => b[1] - a[1])[0] || [];
-  return { runs: runs.length, ...counts, successRate: decided ? counts.succeeded / decided : null,
-    medianMs: percentile(durations, 0.5), p90Ms: percentile(durations, 0.9), slowestStage,
-    commonFailure: code ? { code, count: count as number, of: counts.failed + counts.blocked } : null };
-}
-function runSummary(run: Run) {
-  return { uid: run.uid, state: run.state, outcome: run.outcome, operation: run.operation, source: run.source, commit: run.commit,
-    createdAt: run.createdAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: run.durationMs, error: run.error, errorCode: run.errorCode,
-    currentStepKey: run.currentStepKey, stepsDone: run.steps.filter(step => step.state === 'succeeded').length, stepsTotal: run.steps.length,
-    releaseUid: run.releaseUid, targetLabel: run.targetLabel, repositoryName: run.repositoryName, branchName: run.branchName };
-}
-function releaseRow(row: unknown) {
-  const release = rec(row), kind = text(release.release_kind, 40);
-  return { uid: optionalUuid(release.uid), name: text(release.name, 200), kind, kindLabel: RELEASE_KINDS[kind] || kind.replace(/_/g, ' '),
-    branchUid: optionalUuid(release.code_repository_branch_uid), activeRevisionUid: optionalUuid(release.active_revision), desiredRevisionUid: optionalUuid(release.desired_revision) };
-}
-function revisionRow(row: unknown) {
-  const revision = rec(row);
-  return { uid: optionalUuid(revision.uid), state: text(revision.state, 40), commit: text(revision.commit_sha, 40).slice(0, 7),
-    configurationRevision: Number.isInteger(revision.configuration_revision) ? revision.configuration_revision as number : null,
-    createdAt: when(revision.created_at), activatedAt: when(revision.activated_at) };
-}
-const since = (days: number, now: number) => new Date(now - days * 86_400_000).toISOString();
 function page(value: unknown, what: string): { count: number; results: unknown[] } {
   const body = rec(value);
   if (!Array.isArray(body.results) || !Number.isInteger(body.count) || (body.count as number) < 0) throw new ToolingError('API_ERROR', `${what} ${what.endsWith('s') ? 'are' : 'is'} unavailable.`);
   return { count: body.count as number, results: body.results };
+}
+function releaseQuery(environmentUid: string, branchUid: string, values: Record<string, string>): URLSearchParams {
+  const query = new URLSearchParams({ organization_environment_uid: environmentUid, target_type__in: [...RELEASE_TARGETS].join(','), ordering: '-creation_date', ...values });
+  if (branchUid) query.set('code_repository_branch_uid', branchUid);
+  return query;
+}
+function releaseDeployments(rows: unknown[], now: number) {
+  return rows.filter(row => RELEASE_TARGETS.has(text(rec(row).target_type, 60)))
+    .map(row => deploymentRun(row, now)).filter((run): run is Run => !!run).map(releaseDeployment);
 }
 function pause(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -279,95 +239,32 @@ export function createDeployments(options: { host: HostServices; signal?: AbortS
             complete: page.complete === true, entries, now: at };
           summary = `${entries.length} log ${entries.length === 1 ? 'entry' : 'entries'}.`;
         }
-      } else if (input.action === 'deployment-releases') {
-        // Two reads: one page of releases, then their runs of the window in one request.
+      } else if (input.action === 'deployment-release-history') {
+        // Command Center's Deployment History narrowed to resource releases: one read, newest first.
         const environmentUid = uuid(input.environmentUid, 'Choose an organization environment first.');
-        const days = integer(input.days, 1, 90, 30, 'Choose between 1 and 90 days of release history.');
-        const limit = integer(input.limit, 1, 100, 50, 'Request between 1 and 100 releases.');
-        const offset = integer(input.offset, 0, 1_000_000, 0, 'The release list offset is invalid.');
+        const days = integer(input.days, 1, 90, RELEASE_HISTORY_DAYS, 'Choose between 1 and 90 days of deployment history.');
+        const limit = integer(input.limit, 1, 100, 25, 'Request between 1 and 100 deployments.');
+        const offset = integer(input.offset, 0, 1_000_000, 0, 'The deployment history offset is invalid.');
         const branchUid = input.codeRepositoryBranchUid === undefined ? '' : uuid(input.codeRepositoryBranchUid, 'Choose a repository branch from the current environment.');
-        if (input.releaseKind !== undefined && !(typeof input.releaseKind === 'string' && input.releaseKind in RELEASE_KINDS)) throw new ToolingError('INVALID_REQUEST', `Choose a release kind: ${Object.keys(RELEASE_KINDS).join(', ')}.`);
+        const releaseUid = input.releaseUid === undefined ? '' : uuid(input.releaseUid, 'Choose a release from the current environment.');
+        if (input.releaseKind !== undefined && !(typeof input.releaseKind === 'string' && Object.hasOwn(RELEASE_KINDS, input.releaseKind))) throw new ToolingError('INVALID_REQUEST', `Choose a release kind: ${Object.keys(RELEASE_KINDS).join(', ')}.`);
         if (input.search !== undefined && typeof input.search !== 'string') throw new ToolingError('INVALID_REQUEST', 'Search with text.');
         const kind = input.releaseKind || '', search = text(input.search ?? '', 300).trim();
-        const query = new URLSearchParams({ organization_environment_uid: environmentUid, ordering: 'name', limit: String(limit), offset: String(offset) });
-        if (branchUid) query.set('code_repository_branch_uid', branchUid);
-        if (kind) query.set('release_kind', kind);
+        const query = releaseQuery(environmentUid, branchUid, { created_after: new Date(now - days * 86_400_000).toISOString(), limit: String(limit), offset: String(offset) });
+        if (releaseUid) query.set('target_uid', releaseUid);
+        if (kind) query.set('target_kind', kind);
         if (search) query.set('search', search);
-        const releases = page(await scoped.request<any>(backend, 'GET', `/api/v1/resource-releases/?${query}`), 'The release list');
-        const rows = releases.results.map(releaseRow).filter(row => row.uid);
-        let runs: Run[] = [], inWindow = 0;
-        if (rows.length) {
-          const runQuery = new URLSearchParams({ organization_environment_uid: environmentUid, target_uid__in: rows.map(row => row.uid).join(','),
-            created_after: since(days, now), ordering: '-creation_date', limit: '500' });
-          const found = page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${runQuery}`), 'The deployment runs');
-          inWindow = found.count; runs = found.results.map(row => deploymentRun(row, now)).filter((run): run is Run => !!run);
-        }
-        const byRelease = new Map<string, Run[]>();
-        for (const run of runs) if (run.releaseUid) byRelease.set(run.releaseUid, [...(byRelease.get(run.releaseUid) || []), run]);
-        // A release is deployed whatever the window: its last deploy, repository and branch come from its own
-        // history, not only from the window's runs. One more request covers every release without a
-        // successful run in the window; a few that request leaves out are read one by one.
-        const lastDeploy = new Map<string, Run>();
-        for (const [releaseUid, own] of byRelease) { const deployed = own.find(run => run.state === 'succeeded'); if (deployed) lastDeploy.set(releaseUid, deployed); }
-        const quiet = rows.filter(row => !lastDeploy.has(row.uid as string));
-        const deploys = async (targets: string[], limit: number) => page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${new URLSearchParams({ organization_environment_uid: environmentUid,
-          target_uid__in: targets.join(','), state: 'succeeded', ordering: '-creation_date', limit: String(limit) })}`), 'The deployment runs').results
-          .map(row => deploymentRun(row, now)).filter((run): run is Run => !!run);
-        if (quiet.length) {
-          for (const run of await deploys(quiet.map(row => row.uid as string), 200)) if (run.releaseUid && !lastDeploy.has(run.releaseUid)) lastDeploy.set(run.releaseUid, run);
-          const missing = quiet.filter(row => row.activeRevisionUid && !lastDeploy.has(row.uid as string)).slice(0, 10);
-          for (const run of (await Promise.all(missing.map(row => deploys([row.uid as string], 1)))).flat()) if (run.releaseUid) lastDeploy.set(run.releaseUid, run);
-        }
-        const names = new Map<string, { repositoryName: string; branchName: string }>();
-        const unnamed = [...new Set(rows.filter(row => row.branchUid && !(byRelease.get(row.uid as string)?.[0]?.repositoryName || lastDeploy.get(row.uid as string)?.repositoryName)).map(row => row.branchUid as string))];
-        if (unnamed.length) {
-          // Names only: a reader who may see a release but not its branch still gets the list.
-          const branches = await scoped.request<any>(backend, 'GET', `/api/v1/code-repository-branches/?${new URLSearchParams({ uid__in: unnamed.join(','), limit: String(unnamed.length) })}`)
-            .then(body => page(body, 'The repository branches').results, error => { if (error instanceof ToolingError && ['API_ERROR', 'FORBIDDEN'].includes(error.code)) return []; throw error; });
-          for (const branch of branches.map(rec)) { const uid = optionalUuid(branch.uid); if (uid) names.set(uid, { repositoryName: text(branch.code_repository_name, 200), branchName: text(branch.repository_branch, 200) }); }
-        }
-        const results = rows.map(row => {
-          const own = byRelease.get(row.uid as string) || [], last = own[0], active = own.find(run => ACTIVE_RUN_STATES.has(run.state));
-          const deployed = lastDeploy.get(row.uid as string), named = names.get(row.branchUid as string);
-          return { ...row, repositoryName: last?.repositoryName || deployed?.repositoryName || named?.repositoryName || '', branchName: last?.branchName || deployed?.branchName || named?.branchName || '',
-            recent: own.slice(0, 10).map(run => ({ uid: run.uid, state: run.state })), deployed: !!row.activeRevisionUid,
-            lastRun: last ? runSummary(last) : null, lastDeploy: deployed ? runSummary(deployed) : null, activeRun: active ? runSummary(active) : null, stats: releaseStats(own) };
-        });
-        const deploying = results.filter(row => row.activeRun).length;
-        data = { environmentUid, branchUid: branchUid || null, releaseKind: kind || null, search: search || null, days, count: releases.count, limit, offset, now: at,
-          runsCounted: runs.length, runsInWindow: inWindow, runsTruncated: inWindow > runs.length, results };
-        summary = `${releases.count} ${releases.count === 1 ? 'release' : 'releases'}${deploying ? `; ${deploying} deploying` : ''}.`;
-      } else if (input.action === 'deployment-release') {
-        const environmentUid = uuid(input.environmentUid, 'Choose an organization environment first.');
-        const releaseUid = uuid(input.releaseUid, 'Choose a release from the current environment.');
-        const days = integer(input.days, 1, 90, 30, 'Choose between 1 and 90 days of release history.');
-        const limit = integer(input.limit, 1, 200, 100, 'Request between 1 and 200 runs.');
-        const body = await scoped.request<any>(backend, 'GET', `/api/v1/resource-releases/${releaseUid}/`);
-        if (rec(body).hidden === true) { data = { hidden: true, uid: releaseUid, now: at }; summary = HIDDEN_RELEASE; }
-        else {
-          const release = releaseRow(body);
-          if (release.uid !== releaseUid) throw new ToolingError('API_ERROR', 'The release record is unavailable.');
-          const revisionBody = rec(await scoped.request<any>(backend, 'GET', `/api/v1/resource-releases/${releaseUid}/revisions/?limit=20`));
-          const revisions = list(revisionBody.results).map(revisionRow);
-          const runQuery = new URLSearchParams({ target_uid: releaseUid, organization_environment_uid: environmentUid, created_after: since(days, now), ordering: '-creation_date', limit: String(limit) });
-          const found = page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${runQuery}`), 'The deployment runs');
-          const runs = found.results.map(row => deploymentRun(row, now)).filter((run): run is Run => !!run);
-          const revision = (uid: string | null) => uid ? revisions.find(item => item.uid === uid) || { uid, state: '', commit: '', configurationRevision: null, createdAt: null, activatedAt: null } : null;
-          data = { hidden: false, uid: releaseUid, environmentUid, days, now: at,
-            release: { ...release, repositoryName: runs[0]?.repositoryName || '', branchName: runs[0]?.branchName || '',
-              activeRevision: revision(release.activeRevisionUid), desiredRevision: revision(release.desiredRevisionUid) },
-            count: found.count, counted: runs.length, truncated: found.count > runs.length, runs: runs.map(runSummary), stats: releaseStats(runs) };
-          summary = `${release.name || 'Release'}: ${found.count} ${found.count === 1 ? 'run' : 'runs'} in ${days} ${days === 1 ? 'day' : 'days'}.`;
-        }
+        const found = page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${query}`), 'The deployment history');
+        data = { environmentUid, branchUid: branchUid || null, releaseUid: releaseUid || null, releaseKind: kind || null, search: search || null,
+          days, count: found.count, limit, offset, now: at, results: releaseDeployments(found.results, now) };
+        summary = `${found.count} ${found.count === 1 ? 'deployment' : 'deployments'} in the last ${days === 1 ? 'day' : `${days} days`}.`;
       } else if (input.action === 'deployment-active') {
-        // The cheap check: only runs still queued or running, which the backend allows one of per target.
+        // The cheap check: only release deployments still queued or running, one at most per release.
         const environmentUid = uuid(input.environmentUid, 'Choose an organization environment first.');
         const branchUid = input.codeRepositoryBranchUid === undefined ? '' : uuid(input.codeRepositoryBranchUid, 'Choose a repository branch from the current environment.');
-        const query = new URLSearchParams({ organization_environment_uid: environmentUid, state__in: [...ACTIVE_RUN_STATES].join(','), ordering: '-creation_date', limit: '20' });
-        if (branchUid) query.set('code_repository_branch_uid', branchUid);
-        const found = page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${query}`), 'The deployment runs');
-        const runs = found.results.map(row => deploymentRun(row, now)).filter((run): run is Run => !!run).map(runSummary);
-        data = { environmentUid, branchUid: branchUid || null, count: found.count, now: at, runs };
+        const query = releaseQuery(environmentUid, branchUid, { state__in: [...ACTIVE_RUN_STATES].join(','), limit: '100' });
+        const found = page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${query}`), 'The deployment history');
+        data = { environmentUid, branchUid: branchUid || null, count: found.count, now: at, results: releaseDeployments(found.results, now) };
         summary = found.count ? `${found.count} ${found.count === 1 ? 'deployment' : 'deployments'} in progress.` : 'No deployments in progress.';
       } else if (input.action === 'deployment-wait') {
         // Re-reads one run every ten seconds until it ends or the wait runs out; never longer than two minutes.
