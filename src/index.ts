@@ -57,6 +57,6 @@ export { parseArguments, tokenizeCommand, HELP } from './shared/arguments';
 export { createAgentAssets, stillAgentPng } from './shared/agentAssets';
 export type { AgentAsset } from './shared/agentAssets';
 
-export { createDeployments, DEPLOYMENT_ACTIONS, HIDDEN_DEPLOYMENT, HIDDEN_RELEASE, RELEASE_KINDS, ACTIVE_RUN_STATES, WAIT_INTERVAL_MS, WAIT_LIMIT_SECONDS, WAITING_STAGE, releaseStats } from './shared/deployments';
+export { createDeployments, DEPLOYMENT_ACTIONS, HIDDEN_DEPLOYMENT, RELEASE_KINDS, RELEASE_TARGETS, RELEASE_HISTORY_DAYS, ACTIVE_RUN_STATES, WAIT_INTERVAL_MS, WAIT_LIMIT_SECONDS } from './shared/deployments';
 export type { DeploymentRequest } from './shared/deployments';
 export { writeWorkspacePreferences, readDesktopPreferences } from './shared/workspaceSettings';
