@@ -304,10 +304,34 @@ export function createDeployments(options: { host: HostServices; signal?: AbortS
         }
         const byRelease = new Map<string, Run[]>();
         for (const run of runs) if (run.releaseUid) byRelease.set(run.releaseUid, [...(byRelease.get(run.releaseUid) || []), run]);
+        // A release is deployed whatever the window: its last deploy, repository and branch come from its own
+        // history, not only from the window's runs. One more request covers every release without a
+        // successful run in the window; a few that request leaves out are read one by one.
+        const lastDeploy = new Map<string, Run>();
+        for (const [releaseUid, own] of byRelease) { const deployed = own.find(run => run.state === 'succeeded'); if (deployed) lastDeploy.set(releaseUid, deployed); }
+        const quiet = rows.filter(row => !lastDeploy.has(row.uid as string));
+        const deploys = async (targets: string[], limit: number) => page(await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/?${new URLSearchParams({ organization_environment_uid: environmentUid,
+          target_uid__in: targets.join(','), state: 'succeeded', ordering: '-creation_date', limit: String(limit) })}`), 'The deployment runs').results
+          .map(row => deploymentRun(row, now)).filter((run): run is Run => !!run);
+        if (quiet.length) {
+          for (const run of await deploys(quiet.map(row => row.uid as string), 200)) if (run.releaseUid && !lastDeploy.has(run.releaseUid)) lastDeploy.set(run.releaseUid, run);
+          const missing = quiet.filter(row => row.activeRevisionUid && !lastDeploy.has(row.uid as string)).slice(0, 10);
+          for (const run of (await Promise.all(missing.map(row => deploys([row.uid as string], 1)))).flat()) if (run.releaseUid) lastDeploy.set(run.releaseUid, run);
+        }
+        const names = new Map<string, { repositoryName: string; branchName: string }>();
+        const unnamed = [...new Set(rows.filter(row => row.branchUid && !(byRelease.get(row.uid as string)?.[0]?.repositoryName || lastDeploy.get(row.uid as string)?.repositoryName)).map(row => row.branchUid as string))];
+        if (unnamed.length) {
+          // Names only: a reader who may see a release but not its branch still gets the list.
+          const branches = await scoped.request<any>(backend, 'GET', `/api/v1/code-repository-branches/?${new URLSearchParams({ uid__in: unnamed.join(','), limit: String(unnamed.length) })}`)
+            .then(body => page(body, 'The repository branches').results, error => { if (error instanceof ToolingError && ['API_ERROR', 'FORBIDDEN'].includes(error.code)) return []; throw error; });
+          for (const branch of branches.map(rec)) { const uid = optionalUuid(branch.uid); if (uid) names.set(uid, { repositoryName: text(branch.code_repository_name, 200), branchName: text(branch.repository_branch, 200) }); }
+        }
         const results = rows.map(row => {
           const own = byRelease.get(row.uid as string) || [], last = own[0], active = own.find(run => ACTIVE_RUN_STATES.has(run.state));
-          return { ...row, repositoryName: last?.repositoryName || '', branchName: last?.branchName || '', recent: own.slice(0, 10).map(run => ({ uid: run.uid, state: run.state })),
-            lastRun: last ? runSummary(last) : null, activeRun: active ? runSummary(active) : null, stats: releaseStats(own) };
+          const deployed = lastDeploy.get(row.uid as string), named = names.get(row.branchUid as string);
+          return { ...row, repositoryName: last?.repositoryName || deployed?.repositoryName || named?.repositoryName || '', branchName: last?.branchName || deployed?.branchName || named?.branchName || '',
+            recent: own.slice(0, 10).map(run => ({ uid: run.uid, state: run.state })), deployed: !!row.activeRevisionUid,
+            lastRun: last ? runSummary(last) : null, lastDeploy: deployed ? runSummary(deployed) : null, activeRun: active ? runSummary(active) : null, stats: releaseStats(own) };
         });
         const deploying = results.filter(row => row.activeRun).length;
         data = { environmentUid, branchUid: branchUid || null, releaseKind: kind || null, search: search || null, days, count: releases.count, limit, offset, now: at,
