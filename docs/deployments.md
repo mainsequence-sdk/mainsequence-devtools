@@ -41,11 +41,14 @@ with `releaseName`. An agent's release also carries `agentName`.
 
 The backend offers no push channel, so hosts poll. These rules keep that small:
 
-- **Nothing re-reads while no deployment is active.** Opening the history reads it once.
+- **Opening the history reads it once.** After that, only `deployment-active` is read.
 - **Finished deployments never change.** `ACTIVE_RUN_STATES` (`queued`, `running`) are the
   only states that do, and the backend allows one active deployment per target.
-- **While a shown deployment is active, re-read with `deployment-active`.** It returns only
-  the active ones. When a shown one leaves it, read the history once more.
+- **While the release history is shown, check with `deployment-active` every 30 s.** It
+  returns only the active ones, so a deployment that starts after the read is found. Read
+  the history once more when a shown one leaves it or one that belongs in it starts;
+  otherwise update the shown ones in place. Pause after an hour in which nothing started
+  or ended.
 - **Watching one deployment re-reads only that deployment,** at `WAIT_INTERVAL_MS`. Stop
   when it ends, and pause after an hour.
 - **Poll once per account and environment, not once per chat.** The
