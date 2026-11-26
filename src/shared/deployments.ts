@@ -115,19 +115,45 @@ export function deploymentRun(row: unknown, now: number) {
   const createdAt = when(run.created_at), finishedAt = when(run.finished_at);
   const startedAt = when(run.started_at) ?? earliest(steps.map(step => step.startedAt)) ?? createdAt;
   const workflow = run.workflow_run ? workflowRun(run.workflow_run, now) : null;
-  return { kind: 'deployment_run' as const, uid, state: text(run.state, 40) || 'unknown', outcome: text(run.outcome, 100), operation: text(run.operation, 60), source: text(run.source, 60),
+  const state = text(run.state, 40) || 'unknown', workflowStepKeys = list(run.workflow_step_keys).slice(0, 40).map(key => text(key, 200));
+  return { kind: 'deployment_run' as const, uid, state, outcome: text(run.outcome, 100), operation: text(run.operation, 60), source: text(run.source, 60),
     targetLabel: text(target.display_name || target.name, 200) || text(run.target_type, 60), targetType: text(run.target_type, 60),
     repositoryUid: optionalUuid(repository.uid), repositoryName: text(repository.name, 200),
     branchUid: optionalUuid(run.code_repository_branch_uid) ?? optionalUuid(branch.uid), branchName: text(branch.repository_branch, 200),
     commit: text(run.commit_sha, 40).slice(0, 7), createdAt, startedAt, finishedAt, durationMs: duration(startedAt, finishedAt, now),
     currentStepKey: text(rec(run.pipeline).current_step_key, 200), steps,
-    workflowStepKeys: list(run.workflow_step_keys).slice(0, 40).map(key => text(key, 200)), workflowRun: workflow,
+    workflowStepKeys, workflowRun: workflow, blockedBy: state === 'blocked' && workflow ? blockedBy(uid, workflowStepKeys, workflow) : null,
     logsAvailable: rec(run.logs).state === 'available' || typeof rec(run.logs).url === 'string', error: errorText(run.error), errorCode: errorCode(run.error),
     releaseName: text(release.name, 200) || (RELEASE_TARGETS.has(text(run.target_type, 60)) ? text(target.name, 200) : ''), agentName: text(rec(target.agent).name, 200),
     targetKind: text(target.kind, 60), targetKindLabel: text(target.kind_label, 100), revisionUid: optionalUuid(rec(target.revision).uid),
     releaseUid: optionalUuid(release.uid) ?? (RELEASE_TARGETS.has(text(run.target_type, 60)) ? optionalUuid(target.uid) ?? optionalUuid(run.target_uid) : null) };
 }
 type Run = NonNullable<ReturnType<typeof deploymentRun>>;
+
+/** Workflow step states that keep the steps needing them from running. */
+const FAILED_STEP_STATES = new Set(['failed', 'error', 'errored', 'cancelled', 'canceled', 'stopped', 'timed_out']);
+/** Workflow step states of a step that did not run because a step it needs did not succeed. */
+const UNRUN_STEP_STATES = new Set(['blocked', 'skipped', 'superseded']);
+/**
+ * Why the workflow blocked this deployment, as Command Center says it (`migrate failed · 2 blocked`): the workflow
+ * and the steps that failed. Walks back from this deployment's own steps through the steps they need, past the
+ * ones that did not run, to the ones that failed. When that leads nowhere, every step that failed is named.
+ */
+function blockedBy(uid: string, ownKeys: string[], workflow: NonNullable<ReturnType<typeof workflowRun>>) {
+  const byKey = new Map(workflow.steps.map(step => [step.key, step]));
+  const queue = workflow.steps.filter(step => ownKeys.includes(step.key) || step.deploymentRunUid === uid).map(step => step.key);
+  const seen = new Set<string>(), causes = new Set<string>();
+  for (let key = queue.shift(); key !== undefined; key = queue.shift()) {
+    const step = byKey.get(key);
+    if (!step || seen.has(key)) continue;
+    seen.add(key);
+    if (FAILED_STEP_STATES.has(step.state)) causes.add(key);
+    else if (UNRUN_STEP_STATES.has(step.state)) queue.push(...step.needs);
+  }
+  const failed = workflow.steps.filter(step => causes.size ? causes.has(step.key) : FAILED_STEP_STATES.has(step.state));
+  return { workflowRunUid: workflow.uid, workflowPath: workflow.workflowPath, workflowState: workflow.state,
+    steps: failed.map(step => ({ key: step.key, state: step.state })) };
+}
 
 function errorCode(value: unknown): string {
   const code = rec(value).code;
@@ -140,7 +166,7 @@ function releaseDeployment(run: Run) {
     kindLabel: run.targetKindLabel || RELEASE_KINDS[run.targetKind] || run.targetKind.replace(/_/g, ' '), revisionUid: run.revisionUid, commit: run.commit,
     repositoryName: run.repositoryName, branchUid: run.branchUid, branchName: run.branchName, state: run.state, outcome: run.outcome, source: run.source,
     createdAt: run.createdAt, startedAt: run.startedAt, finishedAt: run.finishedAt, durationMs: active || run.finishedAt ? run.durationMs : null,
-    error: run.error, errorCode: run.errorCode,
+    error: run.error, errorCode: run.errorCode, blockedBy: run.blockedBy,
     // A stage left running in a deployment that has ended was stopped, as Command Center shows it.
     steps: run.steps.map(step => ({ name: step.name || step.key, state: !active && step.state === 'running' ? 'stopped' : step.state })) };
 }
@@ -250,7 +276,8 @@ export function createDeployments(options: { host: HostServices; signal?: AbortS
         if (input.releaseKind !== undefined && !(typeof input.releaseKind === 'string' && Object.hasOwn(RELEASE_KINDS, input.releaseKind))) throw new ToolingError('INVALID_REQUEST', `Choose a release kind: ${Object.keys(RELEASE_KINDS).join(', ')}.`);
         if (input.search !== undefined && typeof input.search !== 'string') throw new ToolingError('INVALID_REQUEST', 'Search with text.');
         const kind = input.releaseKind || '', search = text(input.search ?? '', 300).trim();
-        const query = releaseQuery(environmentUid, branchUid, { created_after: new Date(now - days * 86_400_000).toISOString(), limit: String(limit), offset: String(offset) });
+        // With its workflow run, a blocked row can name the workflow step that failed.
+        const query = releaseQuery(environmentUid, branchUid, { created_after: new Date(now - days * 86_400_000).toISOString(), limit: String(limit), offset: String(offset), include: 'workflow_run' });
         if (releaseUid) query.set('target_uid', releaseUid);
         if (kind) query.set('target_kind', kind);
         if (search) query.set('search', search);
@@ -272,7 +299,7 @@ export function createDeployments(options: { host: HostServices; signal?: AbortS
         const timeout = integer(input.timeoutSeconds, 1, WAIT_LIMIT_SECONDS, 60, `Wait between 1 and ${WAIT_LIMIT_SECONDS} seconds.`);
         const deadline = now + timeout * 1000;
         for (let reads = 1; ; reads++) {
-          const row = await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/${runUid}/`);
+          const row = await scoped.request<any>(backend, 'GET', `/api/v1/deployment-runs/${runUid}/?include=workflow_run`);
           const read = Date.now(), readAt = new Date(read).toISOString();
           if (rec(row).hidden === true) { data = { hidden: true, uid: runUid, now: readAt }; summary = HIDDEN_DEPLOYMENT; break; }
           const run = deploymentRun(row, read);

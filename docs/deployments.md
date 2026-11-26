@@ -28,7 +28,13 @@ has no row. Each row carries what Command Center's columns show:
 - **Branch:** `repositoryName` and `branchName`.
 - **Date:** `startedAt` (when it was created, until it starts) and `finishedAt`.
 - **Type:** `kindLabel`, the backend's label.
-- **State:** `state`, with `outcome`, `errorCode` and `error`.
+- **State:** `state`, with `outcome`, `errorCode` and `error`. A `blocked` deployment's
+  outcome is usually only `workflow_prerequisite_failed`, so the read asks for each row's
+  workflow run (`include=workflow_run`) and a blocked row carries `blockedBy`: the workflow
+  (`workflowRunUid`, `workflowPath`, `workflowState`) and the `steps` that failed, found by
+  walking back from the deployment's own steps through the steps they need. Command Center
+  says the same as `migrate failed · 2 blocked`. `deployment-run` and `deployment-wait`
+  return `blockedBy` too.
 - **Progress:** `steps` in order. A stage left running in a deployment that ended reads
   `stopped`.
 - **Source:** `source`.
